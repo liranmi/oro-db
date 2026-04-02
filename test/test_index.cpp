@@ -118,8 +118,9 @@ static bool SetupEngine(TestEnv& env, const char* cfgPath)
 static bool CreateKVTable(TestEnv& env, const char* name)
 {
     /* Create session on the caller's thread */
+    /* Reserve 2MB of session memory for GC limbo groups */
     env.dmlSession = env.engine->GetSessionManager()->CreateSessionContext(
-        false, 0 /* reserveMemoryKb — use default */);
+        false, 2 * 1024 /* reserveMemoryKb */);
     if (!env.dmlSession) return false;
     env.dmlTxn = env.dmlSession->GetTxnManager();
 
