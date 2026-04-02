@@ -73,11 +73,16 @@ static int g_failed = 0;
  * The simplest correct way: create a temp row, set the id, call BuildKey.
  * ========================================================================= */
 
+/* Build a search key using the InternalKey path (bypasses FDW null bitmap).
+ * The key is the raw bytes of the last column in the table. */
 static void BuildSearchKey(MOT::Index* idx, MOT::Table* table,
                            uint64_t id, MOT::Key* key)
 {
     MOT::Row* tmpRow = table->CreateNewRow();
-    tmpRow->SetValue<uint64_t>(1, id);  /* column 1 = "id" (column 0 = null bitmap) */
+    /* SetInternalKey sets m_keyType=INTERNAL_KEY and stores the value.
+     * BuildKey then uses GetInternalKeyBuff which reads the last column. */
+    int lastCol = table->GetFieldCount() - 1;
+    tmpRow->SetInternalKey(lastCol, id);
     idx->BuildKey(table, tmpRow, key);
     table->DestroyRow(tmpRow);
 }
@@ -122,22 +127,20 @@ static bool CreateKVTable(TestEnv& env, const char* name)
     env.dmlTxn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
 
     env.table = new MOT::Table();
-    /* 3 columns: [0] null bitmap, [1] id, [2] val */
-    if (!env.table->Init(name, (std::string("public.") + name).c_str(), 3))
+    /* 2 columns: [0] val, [1] id (key column LAST for InternalKey path) */
+    if (!env.table->Init(name, (std::string("public.") + name).c_str(), 2))
         return false;
-    env.table->AddColumn("null_bytes", 1,
-                         MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_NULLBYTES, false);
-    env.table->AddColumn("id", sizeof(uint64_t),
-                         MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, true);
     env.table->AddColumn("val", sizeof(int64_t),
                          MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, false);
+    env.table->AddColumn("id", sizeof(uint64_t),
+                         MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, true);
     if (!env.table->InitRowPool()) return false;
 
     MOT::RC rc = env.dmlTxn->CreateTable(env.table);
     if (rc != MOT::RC_OK) return false;
 
-    /* LONG key = 9 bytes (1 sign + 8 big-endian) */
-    const uint32_t keyLen = sizeof(uint64_t) + 1;
+    /* InternalKey path uses raw CpKey — no PackKey encoding, key = sizeof(uint64_t) */
+    const uint32_t keyLen = sizeof(uint64_t);
     MOT::IndexTreeFlavor flavor = MOT::GetGlobalConfiguration().m_indexTreeFlavor;
     MOT::Index* idx = MOT::IndexFactory::CreatePrimaryIndexEx(
         MOT::IndexingMethod::INDEXING_METHOD_TREE, flavor,
@@ -146,7 +149,7 @@ static bool CreateKVTable(TestEnv& env, const char* name)
 
     idx->SetNumTableFields(env.table->GetFieldCount());
     idx->SetNumIndexFields(1);
-    idx->SetLenghtKeyFields(0, 1, keyLen);
+    idx->SetLenghtKeyFields(0, 1, keyLen);  /* key field 0 → table column 1 ("id") */
     idx->SetTable(env.table);
 
     rc = env.dmlTxn->CreateIndex(env.table, idx, true);
@@ -170,15 +173,20 @@ static MOT::RC TxnInsert(MOT::TxnManager* txn, MOT::Table* table,
     txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
     MOT::Row* row = table->CreateNewRow();
     if (!row) { txn->Rollback(); return MOT::RC::RC_MEMORY_ALLOCATION_ERROR; }
-    row->SetValue<uint64_t>(1, id);
-    row->SetValue<int64_t>(2, val);
+    /* Column layout: [0]=val, [1]=id (key column last for InternalKey) */
+    row->SetValue<int64_t>(0, val);
+    row->SetInternalKey(1, id);
     MOT::RC rc = table->InsertRow(row, txn);
     if (rc != MOT::RC_OK) {
-        txn->Rollback();     /* Rollback calls Cleanup() internally */
+        fprintf(stderr, "  [DBG] InsertRow failed rc=%d (%s) id=%lu\n", (int)rc, MOT::RcToString(rc), id);
+        txn->Rollback();
         return rc;
     }
     rc = txn->Commit();
-    txn->EndTransaction();   /* Commit does NOT clean — EndTransaction calls Cleanup() */
+    if (rc != MOT::RC_OK) {
+        fprintf(stderr, "  [DBG] Commit failed rc=%d (%s) id=%lu\n", (int)rc, MOT::RcToString(rc), id);
+    }
+    txn->EndTransaction();
     return rc;
 }
 
@@ -205,7 +213,7 @@ static void LL_InsertAndRead(void)
 
     uint64_t readId; row->GetValue(1, readId);
     TEST_ASSERT(readId == 42, "Read back id == 42");
-    int64_t readVal; row->GetValue(2, readVal);
+    int64_t readVal; row->GetValue(0, readVal);
     TEST_ASSERT(readVal == 420, "Read back val == 420");
 
     idx->DestroyKey(key);
@@ -236,7 +244,7 @@ static void LL_DuplicateRejection(void)
     BuildSearchKey(idx, g_ll.table, 100, key);
     MOT::Row* found = idx->IndexRead(key, 0);
     TEST_ASSERT(found != nullptr, "Original row still present");
-    int64_t v; found->GetValue(2, v);
+    int64_t v; found->GetValue(0, v);
     TEST_ASSERT(v == 1000, "Original value preserved");
     idx->DestroyKey(key);
 }
@@ -397,7 +405,7 @@ static void TX_InsertAndLookup(void)
     TEST_ASSERT(row != nullptr, "Txn lookup finds id=1");
     uint64_t id; row->GetValue(1, id);
     TEST_ASSERT(id == 1, "Txn read id correct");
-    int64_t val; row->GetValue(2, val);
+    int64_t val; row->GetValue(0, val);
     TEST_ASSERT(val == 10, "Txn read val correct");
     g_tx.dmlTxn->Rollback();
     g_tx.dmlTxn->EndTransaction();
@@ -437,19 +445,18 @@ static void TX_MultiColumnTable(void)
 
         dt->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
         mc = new MOT::Table();
-        /* 5 columns: [0] null_bytes, [1] a, [2] b, [3] c, [4] d */
-        if (!mc->Init("multi_col", "public.multi_col", 5)) return;
-        mc->AddColumn("null_bytes", 1, MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_NULLBYTES, false);
-        mc->AddColumn("a", sizeof(uint64_t), MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, true);
+        /* 4 columns: [0] b, [1] c, [2] d, [3] a (key column LAST) */
+        if (!mc->Init("multi_col", "public.multi_col", 4)) return;
         mc->AddColumn("b", sizeof(uint64_t), MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, false);
         mc->AddColumn("c", sizeof(int32_t), MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_INT, false);
         mc->AddColumn("d", 128, MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_VARCHAR, false);
+        mc->AddColumn("a", sizeof(uint64_t), MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, true);
         if (!mc->InitRowPool()) return;
 
         MOT::RC rc = dt->CreateTable(mc);
         if (rc != MOT::RC_OK) return;
 
-        const uint32_t keyLen = sizeof(uint64_t) + 1;
+        const uint32_t keyLen = sizeof(uint64_t);
         MOT::IndexTreeFlavor fl = MOT::GetGlobalConfiguration().m_indexTreeFlavor;
         MOT::Index* mcIdx = MOT::IndexFactory::CreatePrimaryIndexEx(
             MOT::IndexingMethod::INDEXING_METHOD_TREE, fl,
@@ -457,7 +464,7 @@ static void TX_MultiColumnTable(void)
         if (!mcIdx) return;
         mcIdx->SetNumTableFields(mc->GetFieldCount());
         mcIdx->SetNumIndexFields(1);
-        mcIdx->SetLenghtKeyFields(0, 1, keyLen);
+        mcIdx->SetLenghtKeyFields(0, 3, keyLen);  /* key field 0 → column 3 ("a") */
         mcIdx->SetTable(mc);
         rc = dt->CreateIndex(mc, mcIdx, true);
         if (rc != MOT::RC_OK) return;
@@ -471,14 +478,14 @@ static void TX_MultiColumnTable(void)
     TEST_ASSERT(ddlOk, "MC table DDL committed");
     TEST_ASSERT(mc != nullptr, "MC table created");
 
-    /* Insert using DML session — column layout: [0]=null_bytes [1]=a [2]=b [3]=c [4]=d */
+    /* Insert using DML session — column layout: [0]=b, [1]=c, [2]=d, [3]=a (key) */
     for (uint64_t i = 1; i <= 50; ++i) {
         g_tx.dmlTxn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
         MOT::Row* row = mc->CreateNewRow();
         TEST_ASSERT(row != nullptr, "Create mc row");
-        row->SetValue<uint64_t>(1, i);
-        row->SetValue<uint64_t>(2, i * 100);
-        row->SetValue<int32_t>(3, (int32_t)(i * -1));
+        row->SetValue<uint64_t>(0, i * 100);           /* b */
+        row->SetValue<int32_t>(1, (int32_t)(i * -1));   /* c */
+        row->SetInternalKey(3, i);                       /* a (key) */
         MOT::RC rc = mc->InsertRow(row, g_tx.dmlTxn);
         if (rc != MOT::RC_OK) { g_tx.dmlTxn->Rollback(); continue; }
         rc = g_tx.dmlTxn->Commit();
@@ -493,9 +500,9 @@ static void TX_MultiColumnTable(void)
         BuildSearchKey(idx, mc, i, key);
         MOT::Row* found = idx->IndexRead(key, 0);
         TEST_ASSERT(found != nullptr, "MC lookup");
-        uint64_t b; found->GetValue(2, b);
+        uint64_t b; found->GetValue(0, b);
         TEST_ASSERT(b == i * 100, "MC value b correct");
-        int32_t c; found->GetValue(3, c);
+        int32_t c; found->GetValue(1, c);
         TEST_ASSERT(c == (int32_t)(i * -1), "MC value c correct");
         idx->DestroyKey(key);
     }
