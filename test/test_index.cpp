@@ -113,7 +113,9 @@ static bool SetupEngine(TestEnv& env, const char* cfgPath)
 static bool CreateKVTable(TestEnv& env, const char* name)
 {
     /* Create session on the caller's thread */
-    env.dmlSession = env.engine->GetSessionManager()->CreateSessionContext();
+    /* Reserve 2MB of session memory for GC limbo groups */
+    env.dmlSession = env.engine->GetSessionManager()->CreateSessionContext(
+        false, 2 * 1024 /* reserveMemoryKb */);
     if (!env.dmlSession) return false;
     env.dmlTxn = env.dmlSession->GetTxnManager();
 
@@ -151,7 +153,9 @@ static bool CreateKVTable(TestEnv& env, const char* name)
     if (rc != MOT::RC_OK) return false;
 
     rc = env.dmlTxn->Commit();
-    return rc == MOT::RC_OK;
+    if (rc != MOT::RC_OK) return false;
+    env.dmlTxn->EndTransaction();
+    return true;
 }
 
 /* Insert a single (id, val) row via the transactional API.
@@ -170,12 +174,12 @@ static MOT::RC TxnInsert(MOT::TxnManager* txn, MOT::Table* table,
     row->SetValue<int64_t>(2, val);
     MOT::RC rc = table->InsertRow(row, txn);
     if (rc != MOT::RC_OK) {
-        /* Do NOT DestroyRow here — Rollback handles cleanup of rows
-         * that were partially inserted into the index. */
         txn->Rollback();
+        txn->EndTransaction();
         return rc;
     }
     rc = txn->Commit();
+    txn->EndTransaction();
     return rc;
 }
 
@@ -396,7 +400,8 @@ static void TX_InsertAndLookup(void)
     TEST_ASSERT(id == 1, "Txn read id correct");
     int64_t val; row->GetValue(2, val);
     TEST_ASSERT(val == 10, "Txn read val correct");
-    g_tx.dmlTxn->Commit();  /* read-only, just clean up */
+    g_tx.dmlTxn->Rollback();
+    g_tx.dmlTxn->EndTransaction();
 
     idx->DestroyKey(key);
 }
@@ -458,6 +463,7 @@ static void TX_MultiColumnTable(void)
         rc = dt->CreateIndex(mc, mcIdx, true);
         if (rc != MOT::RC_OK) return;
         rc = dt->Commit();
+        if (rc == MOT::RC_OK) dt->EndTransaction();
         ddlOk = (rc == MOT::RC_OK);
 
         g_tx.engine->GetSessionManager()->DestroySessionContext(ds);
@@ -475,8 +481,9 @@ static void TX_MultiColumnTable(void)
         row->SetValue<uint64_t>(2, i * 100);
         row->SetValue<int32_t>(3, (int32_t)(i * -1));
         MOT::RC rc = mc->InsertRow(row, g_tx.dmlTxn);
-        if (rc != MOT::RC_OK) { g_tx.dmlTxn->Rollback(); continue; }
+        if (rc != MOT::RC_OK) { g_tx.dmlTxn->Rollback(); g_tx.dmlTxn->EndTransaction(); continue; }
         rc = g_tx.dmlTxn->Commit();
+        g_tx.dmlTxn->EndTransaction();
         TEST_ASSERT_RC(rc, "Commit mc row");
     }
 
