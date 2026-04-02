@@ -50,10 +50,17 @@ static inline int snprintf_truncated_s(char* dest, size_t destMax, const char* f
     return ret;
 }
 
+/* Forward-declare StringBuffer for log_line_buf pointer */
+namespace MOT { struct StringBuffer; }
+
+/* Log line buffer size — must match mot_log.cpp */
+#define MOT_LOG_BUF_SIZE_KB 1
+#define MOT_MAX_LOG_LINE_LENGTH (MOT_LOG_BUF_SIZE_KB * 1024 - 1)
+
 /* MOT-specific thread-local context (replaces t_thrd.mot_cxt) */
 struct knl_t_mot_context {
     uint16_t currentThreadId = (uint16_t)-1;
-    int currentNumaNodeId = -1;
+    int currentNumaNodeId = -2;  /* MEM_INVALID_NODE */
     int bindPolicy = 0;
     unsigned int mbindFlags = 0;
 
@@ -63,11 +70,16 @@ struct knl_t_mot_context {
     mot_error_frame error_stack[MOT_MAX_ERROR_FRAMES] = {};
     unsigned error_frame_count = 0;
 
-    /* Logging */
-    char* log_line = nullptr;
-    unsigned log_line_pos = 0;
+    /* Logging — matches openGauss knl_thread.h:
+     *   char log_line[MOT_MAX_LOG_LINE_LENGTH + 1];
+     *   int log_line_pos;
+     *   bool log_line_overflow;
+     *   MOT::StringBuffer* log_line_buf;
+     */
+    char log_line[MOT_MAX_LOG_LINE_LENGTH + 1] = {};
+    int log_line_pos = 0;
     bool log_line_overflow = false;
-    char log_line_buf[2048] = {};
+    MOT::StringBuffer* log_line_buf = nullptr;
 };
 
 /* Thread-local context structure (replaces t_thrd) */
@@ -83,8 +95,7 @@ static inline void knl_thread_mot_init()
 {
     t_thrd.mot_cxt = {};
     t_thrd.mot_cxt.currentThreadId = (uint16_t)-1;
-    t_thrd.mot_cxt.currentNumaNodeId = -1;
-    t_thrd.mot_cxt.log_line = t_thrd.mot_cxt.log_line_buf;
+    t_thrd.mot_cxt.currentNumaNodeId = -2;  /* MEM_INVALID_NODE */
 }
 
 #endif /* KNL_THREAD_H_STUB */

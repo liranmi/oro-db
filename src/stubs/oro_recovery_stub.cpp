@@ -7,7 +7,7 @@
 namespace MOT {
 
 MTLSRecoveryManager::~MTLSRecoveryManager() {}
-bool MTLSRecoveryManager::Initialize() { return false; }
+bool MTLSRecoveryManager::Initialize() { return true; }
 bool MTLSRecoveryManager::RecoverDbStart() { return false; }
 bool MTLSRecoveryManager::RecoverDbEnd() { return false; }
 bool MTLSRecoveryManager::CommitTransaction(uint64_t) { return false; }

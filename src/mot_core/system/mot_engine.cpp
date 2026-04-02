@@ -181,6 +181,11 @@ bool MOTEngine::LoadConfig()
     if (!result) {
         MOT_REPORT_ERROR(MOT_ERROR_INTERNAL, "System Startup", "Failed to load configuration for the first time");
     } else {
+#ifdef MOT_STANDALONE
+        // In standalone mode, disable checkpoint and redo log (no WAL infrastructure)
+        GetGlobalConfiguration().m_enableCheckpoint = false;
+        GetGlobalConfiguration().m_enableRedoLog = false;
+#endif
         if (!GetGlobalConfiguration().m_enableNuma) {
             MOT_LOG_WARN("NUMA-aware memory allocation is disabled");
         }
@@ -424,6 +429,7 @@ bool MOTEngine::InitializeAppServices()
         CHECK_INIT_STATUS(result, "Failed to Initialize the redo-log handler");
         m_initAppStack.push(INIT_REDO_LOG_HANDLER_PHASE);
 
+#ifndef MOT_STANDALONE
         result = InitializeRecoveryManager();
         CHECK_INIT_STATUS(result, "Failed to Initialize the recovery manager");
         m_initAppStack.push(INIT_RECOVERY_MANAGER_PHASE);
@@ -433,6 +439,9 @@ bool MOTEngine::InitializeAppServices()
         result = InitializeCheckpointManager();
         CHECK_INIT_STATUS(result, "Failed to Initialize the checkpoint manager");
         m_initAppStack.push(INIT_CHECKPOINT_MANAGER_PHASE);
+#else
+        MOT_LOG_INFO("Startup: Standalone mode — recovery and checkpoint managers disabled");
+#endif
     } while (0);
 
     if (result) {
