@@ -174,6 +174,7 @@ static MOT::RC TxnInsert(MOT::TxnManager* txn, MOT::Table* table,
     row->SetValue<int64_t>(2, val);
     MOT::RC rc = table->InsertRow(row, txn);
     if (rc != MOT::RC_OK) {
+        fprintf(stderr, "  [DBG] InsertRow rc=%d (%s) id=%lu\n", (int)rc, MOT::RcToString(rc), id);
         txn->Rollback();
         txn->EndTransaction();
         return rc;
