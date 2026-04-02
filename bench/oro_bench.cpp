@@ -11,6 +11,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <climits>
+#include <libgen.h>
+#include <unistd.h>
 
 // MOT core headers
 #include "mot_engine.h"
@@ -42,9 +45,18 @@ int main(int argc, char* argv[])
     printf("  Index: StubPrimaryIndex (std::map, mutex-based)\n");
     printf("  Note:  Real MassTree not yet integrated\n\n");
 
-    // 1. Initialize MOT engine
+    // 1. Initialize MOT engine — resolve config path relative to the executable
     printf("[1] Initializing MOT engine...\n");
-    MOT::MOTEngine* engine = MOT::MOTEngine::CreateInstance();
+    char exePath[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+    const char* cfgPath = nullptr;
+    char cfgBuf[PATH_MAX];
+    if (len > 0) {
+        exePath[len] = '\0';
+        snprintf(cfgBuf, sizeof(cfgBuf), "%s/../config/mot.conf", dirname(exePath));
+        cfgPath = cfgBuf;
+    }
+    MOT::MOTEngine* engine = MOT::MOTEngine::CreateInstance(cfgPath);
     if (!engine) {
         fprintf(stderr, "FATAL: Failed to create MOT engine\n");
         return 1;
