@@ -148,11 +148,28 @@ if(ORO_BUILD_BENCH)
     )
 endif()
 
+# =============================================================================
+# Test executable
+# =============================================================================
+option(ORO_BUILD_TESTS "Build the index test suite" ON)
+
+if(ORO_BUILD_TESTS)
+    add_executable(oro_test_index
+        ${CMAKE_SOURCE_DIR}/test/test_index.cpp
+    )
+    target_link_libraries(oro_test_index PRIVATE oro)
+    target_include_directories(oro_test_index PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${MOT_INCLUDE_DIRS}
+    )
+endif()
+
 message(STATUS "")
 message(STATUS "=== oro-db configuration ===")
 message(STATUS "  Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Masstree:      ${ORO_HAS_MASSTREE}")
 message(STATUS "  NUMA support:  ${ORO_WITH_NUMA}")
 message(STATUS "  Benchmark:     ${ORO_BUILD_BENCH}")
+message(STATUS "  Tests:         ${ORO_BUILD_TESTS}")
 message(STATUS "============================")
 message(STATUS "")
