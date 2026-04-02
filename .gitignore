@@ -1,5 +1,9 @@
 build/
-third_party/
+third_party/masstree/.git/
+third_party/masstree/GNUmakefile
+third_party/masstree/config.status
+third_party/masstree/config.log
+third_party/masstree/autom4te.cache/
 *.o
 *.a
 *.so

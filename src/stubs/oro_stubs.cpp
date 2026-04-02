@@ -36,7 +36,26 @@ uint16_t MOTTimestampTzToStr(uintptr_t val, char* buf, size_t len)
 /* MTLS Recovery Manager stub — we excluded the .cpp.
  * Provide a stub .cpp with just enough to satisfy the vtable. */
 
-/* Masstree threadinfo stub — mot_masstree_kvthread.cpp is excluded,
- * so we provide the minimal definitions here. */
+/* Masstree threadinfo — when using real masstree, mot_masstree_kvthread.cpp
+ * defines mtSessionThreadInfo. Otherwise we provide a stub. */
+#ifndef ORO_HAS_MASSTREE
 class threadinfo;
 __thread threadinfo* mtSessionThreadInfo = nullptr;
+#endif
+
+/* Masstree assertion functions (declared in config.h / compiler.hh) */
+#ifdef ORO_HAS_MASSTREE
+#include <cstdlib>
+#include <cstdio>
+void fail_always_assert(const char* file, int line, const char* assertion, const char* message) {
+    fprintf(stderr, "assertion \"%s\" failed: file \"%s\", line %d\n", assertion, file, line);
+    if (message) fprintf(stderr, "  %s\n", message);
+    abort();
+}
+void fail_masstree_invariant(const char* file, int line, const char* assertion, const char* message) {
+    fail_always_assert(file, line, assertion, message);
+}
+void fail_masstree_precondition(const char* file, int line, const char* assertion, const char* message) {
+    fail_always_assert(file, line, assertion, message);
+}
+#endif

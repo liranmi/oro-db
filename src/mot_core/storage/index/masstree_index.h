@@ -29,6 +29,7 @@
 #include "index_base.h"
 #include "utilities.h"
 #include "masstree_config.h"
+#include "kvthread.hh"
 #include "masstree/mot_masstree.hpp"
 #include "masstree/mot_masstree_insert.hpp"
 #include "masstree/mot_masstree_remove.hpp"

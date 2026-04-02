@@ -42,8 +42,11 @@ int main(int argc, char* argv[])
 
     printf("=== oro-db micro-benchmark ===\n");
     printf("  Rows:  %lu\n", (unsigned long)numRows);
-    printf("  Index: StubPrimaryIndex (std::map, mutex-based)\n");
-    printf("  Note:  Real MassTree not yet integrated\n\n");
+#ifdef ORO_HAS_MASSTREE
+    printf("  Index: MasstreePrimaryIndex (real MassTree, lock-free)\n\n");
+#else
+    printf("  Index: StubPrimaryIndex (std::map, mutex-based)\n\n");
+#endif
 
     // 1. Initialize MOT engine — resolve config path relative to the executable
     printf("[1] Initializing MOT engine...\n");
