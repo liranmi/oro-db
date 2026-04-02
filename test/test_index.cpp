@@ -135,22 +135,32 @@ static bool CreateKVTable(TestEnv& env, const char* name)
     env.table->AddColumn("id", sizeof(uint64_t),
                          MOT::MOT_CATALOG_FIELD_TYPES::MOT_TYPE_LONG, true);
     if (!env.table->InitRowPool()) return false;
+    if (!env.table->InitTombStonePool()) return false;
 
     MOT::RC rc = env.dmlTxn->CreateTable(env.table);
     if (rc != MOT::RC_OK) return false;
 
-    /* InternalKey path uses raw CpKey — no PackKey encoding, key = sizeof(uint64_t) */
-    const uint32_t keyLen = sizeof(uint64_t);
+    /* Create index following the same order as CreateIndexFromMeta:
+     * 1. CreateIndex (no init yet)
+     * 2. Set fields, table, key mappings
+     * 3. IndexInit last (allocates pools based on final config) */
     MOT::IndexTreeFlavor flavor = MOT::GetGlobalConfiguration().m_indexTreeFlavor;
-    MOT::Index* idx = MOT::IndexFactory::CreatePrimaryIndexEx(
-        MOT::IndexingMethod::INDEXING_METHOD_TREE, flavor,
-        keyLen, std::string(name) + "_pkey", rc, nullptr);
-    if (!idx || rc != MOT::RC_OK) return false;
+    MOT::Index* idx = MOT::IndexFactory::CreateIndex(
+        MOT::IndexOrder::INDEX_ORDER_PRIMARY,
+        MOT::IndexingMethod::INDEXING_METHOD_TREE, flavor);
+    if (!idx) return false;
 
-    idx->SetNumTableFields(env.table->GetFieldCount());
+    idx->SetUnique(true);
+    if (!idx->SetNumTableFields(env.table->GetFieldCount())) return false;
     idx->SetNumIndexFields(1);
-    idx->SetLenghtKeyFields(0, 1, keyLen);  /* key field 0 → table column 1 ("id") */
+    /* Use the column's actual m_keySize for proper key length */
+    /* InternalKey path uses raw CpKey (no PackKey), so key length = column size, not keySize */
+    uint32_t keyLen = env.table->GetFieldSize(1);  /* column 1 = "id" = sizeof(uint64_t) = 8 */
+    idx->SetLenghtKeyFields(0, 1, keyLen);
     idx->SetTable(env.table);
+    rc = idx->IndexInit(keyLen, true, std::string(name) + "_pkey", nullptr);
+    if (rc != MOT::RC_OK) { delete idx; return false; }
+    idx->SetIsCommited(true);
 
     rc = env.dmlTxn->CreateIndex(env.table, idx, true);
     if (rc != MOT::RC_OK) return false;
