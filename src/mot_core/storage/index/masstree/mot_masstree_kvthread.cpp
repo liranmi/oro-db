@@ -58,7 +58,7 @@ public:
     }
 };
 
-volatile mrcu_epoch_type globalepoch;
+relaxed_atomic<mrcu_epoch_type> globalepoch;
 
 inline threadinfo::threadinfo(int purpose, int index, int rcu_max_free_count)
 {

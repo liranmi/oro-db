@@ -29,6 +29,7 @@
 #include "sys_numa_api.h"
 
 // For Masstree
+#include "masstree_config.h"
 #include "kvthread.hh"
 
 #include <pthread.h>

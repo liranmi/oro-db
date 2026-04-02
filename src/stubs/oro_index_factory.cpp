@@ -1,10 +1,13 @@
 /*
  * oro-db replacement for index_factory.cpp
- * Uses StubPrimaryIndex instead of MasstreePrimaryIndex.
- * Replace with real masstree when the openGauss-patched library is linked.
+ * Uses MasstreePrimaryIndex when ORO_HAS_MASSTREE is defined,
+ * falls back to StubPrimaryIndex (std::map-based) otherwise.
  */
 #include "index_factory.h"
 #include "oro_stub_index.h"
+#ifdef ORO_HAS_MASSTREE
+#include "masstree_index.h"
+#endif
 #include "utilities.h"
 
 namespace MOT {
@@ -68,8 +71,13 @@ Index* IndexFactory::CreatePrimaryTreeIndex(IndexTreeFlavor flavor)
     Index* result = nullptr;
     switch (flavor) {
         case IndexTreeFlavor::INDEX_TREE_FLAVOR_MASSTREE:
+#ifdef ORO_HAS_MASSTREE
+            MOT_LOG_DEBUG("Creating MasstreePrimaryIndex.");
+            result = new (std::nothrow) MasstreePrimaryIndex();
+#else
             MOT_LOG_DEBUG("Creating StubPrimaryIndex (masstree not linked).");
             result = new (std::nothrow) StubPrimaryIndex();
+#endif
             break;
         default:
             MOT_REPORT_ERROR(MOT_ERROR_INVALID_ARG,

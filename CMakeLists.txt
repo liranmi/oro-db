@@ -21,27 +21,26 @@ option(ORO_WITH_NUMA "Enable NUMA support (requires libnuma)" OFF)
 # =============================================================================
 # Masstree
 # =============================================================================
-# The upstream kohler/masstree-beta has incompatible API with MOT's wrappers.
-# MOT requires the openGauss-patched masstree (from openGauss-third_party repo).
-# Until that is integrated, we use StubPrimaryIndex (std::map-based).
-# TODO: integrate openGauss-patched masstree for real MassTree index support.
-#
-# If you have the patched masstree, set MASSTREE_DIR:
-#   cmake .. -DMASSTREE_DIR=/path/to/patched/masstree
-option(MASSTREE_DIR "Path to openGauss-patched masstree (optional)" "")
-if(MASSTREE_DIR AND EXISTS ${MASSTREE_DIR}/config.h)
-    message(STATUS "Using masstree from: ${MASSTREE_DIR}")
-    include_directories(BEFORE ${MASSTREE_DIR})
+# Check for patched masstree in third_party/masstree (with config.h from ./configure)
+set(MASSTREE_SRC_DIR "${CMAKE_SOURCE_DIR}/third_party/masstree")
+if(EXISTS "${MASSTREE_SRC_DIR}/config.h")
+    message(STATUS "Using patched masstree from: ${MASSTREE_SRC_DIR}")
     set(ORO_HAS_MASSTREE ON)
 else()
     message(STATUS "Masstree not available — using StubPrimaryIndex")
+    message(STATUS "  To enable: cd third_party/masstree && autoreconf -i && ./configure --enable-max-key-len=256")
     set(ORO_HAS_MASSTREE OFF)
 endif()
 
 # =============================================================================
 # Stubs (replace openGauss kernel headers)
 # =============================================================================
+# Stubs dir must come first so our postgres.h etc. override system/openGauss headers
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/src/stubs)
+# Masstree include must come before MOT core so masstree_config.h resolves to our stub bridge
+if(ORO_HAS_MASSTREE)
+    include_directories(BEFORE ${MASSTREE_SRC_DIR})
+endif()
 
 # =============================================================================
 # MOT Core source collection
@@ -61,21 +60,39 @@ include_directories(${MOT_INCLUDE_DIRS})
 # Collect all .cpp files from MOT core
 file(GLOB_RECURSE MOT_CORE_SOURCES ${MOT_CORE_DIR}/*.cpp)
 
-# Exclude masstree-dependent source files — using StubPrimaryIndex until
-# the openGauss-patched masstree library is available.
-# (Upstream kohler/masstree-beta has incompatible API.)
-list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*mot_masstree_kvthread\\.cpp$")
-list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*masstree_index\\.cpp$")
-list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*index_factory\\.cpp$")
 # Recovery manager has heavy openGauss memory context dependencies
 list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*mtls_recovery_manager\\.cpp$")
 
-# Stubs source (openGauss kernel replacements + stub index)
+if(ORO_HAS_MASSTREE)
+    # With real masstree: exclude the original index_factory.cpp (use our stub),
+    # and exclude MOT's mot_masstree_kvthread.cpp (we use upstream threadinfo with our adapter)
+    list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*/index_factory\\.cpp$")
+    list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*mot_masstree_kvthread\\.cpp$")
+else()
+    # Without masstree: exclude masstree-dependent files
+    list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*mot_masstree_kvthread\\.cpp$")
+    list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*masstree_index\\.cpp$")
+    list(FILTER MOT_CORE_SOURCES EXCLUDE REGEX ".*/index_factory\\.cpp$")
+endif()
+
+# Stubs source (openGauss kernel replacements)
 set(STUB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/stubs/oro_stubs.cpp
     ${CMAKE_SOURCE_DIR}/src/stubs/oro_index_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/stubs/oro_recovery_stub.cpp
+    ${CMAKE_SOURCE_DIR}/src/stubs/oro_masstree_adapter.cpp
 )
+
+# Masstree source files (from upstream kohler/masstree-beta)
+if(ORO_HAS_MASSTREE)
+    set(MASSTREE_SOURCES
+        ${MASSTREE_SRC_DIR}/kvthread.cc
+        ${MASSTREE_SRC_DIR}/straccum.cc
+        ${MASSTREE_SRC_DIR}/str.cc
+        ${MASSTREE_SRC_DIR}/string.cc
+        ${MASSTREE_SRC_DIR}/compiler.cc
+    )
+endif()
 
 # =============================================================================
 # liboro - the core MOT library
@@ -83,12 +100,17 @@ set(STUB_SOURCES
 add_library(oro STATIC
     ${MOT_CORE_SOURCES}
     ${STUB_SOURCES}
+    ${MASSTREE_SOURCES}
 )
 
 target_compile_definitions(oro PUBLIC
     MOT_STANDALONE=1
     ENABLE_MOT=1
 )
+
+if(ORO_HAS_MASSTREE)
+    target_compile_definitions(oro PUBLIC ORO_HAS_MASSTREE=1)
+endif()
 
 # Suppress warnings for vendored code
 target_compile_options(oro PRIVATE
@@ -102,7 +124,6 @@ target_compile_options(oro PRIVATE
     -fpermissive
 )
 
-# Note: real masstree not linked yet (using StubPrimaryIndex)
 target_link_libraries(oro PUBLIC
     pthread
     atomic
