@@ -415,6 +415,7 @@ int main(int argc, char* argv[])
                 }
 
                 engine->GetSessionManager()->DestroySessionContext(session);
+                engine->OnCurrentThreadEnding();
             });
         }
     } else {
@@ -453,6 +454,7 @@ int main(int argc, char* argv[])
                 }
 
                 engine->GetSessionManager()->DestroySessionContext(session);
+                engine->OnCurrentThreadEnding();
             });
         }
     }

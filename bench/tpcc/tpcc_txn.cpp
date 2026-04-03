@@ -153,7 +153,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
 RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 {
     RC rc = RC_OK;
-
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     // SQL: UPDATE WAREHOUSE SET W_YTD += :h_amount
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }

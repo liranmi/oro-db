@@ -85,12 +85,12 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- WAREHOUSE (Clause 1.3.1) ----
     t.warehouse = new Table();
     if (!t.warehouse->Init("warehouse", "public.warehouse", WH::W_NUM_COLS)) return false;
-    t.warehouse->AddColumn("W_NAME",     10,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STREET_1", 20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STREET_2", 20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_CITY",     20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STATE",    2,   F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_ZIP",      9,   F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_NAME",     11,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STREET_1", 21,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STREET_2", 21,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_CITY",     21,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STATE",    3,   F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_ZIP",      10,  F::MOT_TYPE_VARCHAR, false);
     t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);
     t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);
     t.warehouse->AddColumn("W_KEY",      8,   F::MOT_TYPE_LONG,    true);
@@ -104,12 +104,12 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- DISTRICT (Clause 1.3.2) ----
     t.district = new Table();
     if (!t.district->Init("district", "public.district", DIST::D_NUM_COLS)) return false;
-    t.district->AddColumn("D_NAME",      10, F::MOT_TYPE_VARCHAR, false);
-    t.district->AddColumn("D_STREET_1",  20, F::MOT_TYPE_VARCHAR, false);
-    t.district->AddColumn("D_STREET_2",  20, F::MOT_TYPE_VARCHAR, false);
-    t.district->AddColumn("D_CITY",      20, F::MOT_TYPE_VARCHAR, false);
-    t.district->AddColumn("D_STATE",     2,  F::MOT_TYPE_VARCHAR, false);
-    t.district->AddColumn("D_ZIP",       9,  F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_NAME",      11, F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_STREET_1",  21, F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_STREET_2",  21, F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_CITY",      21, F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_STATE",     3,  F::MOT_TYPE_VARCHAR, false);
+    t.district->AddColumn("D_ZIP",       10, F::MOT_TYPE_VARCHAR, false);
     t.district->AddColumn("D_TAX",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_YTD",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_NEXT_O_ID", 8,  F::MOT_TYPE_LONG,    false);
@@ -124,24 +124,24 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- CUSTOMER (Clause 1.3.3) ----
     t.customer = new Table();
     if (!t.customer->Init("customer", "public.customer", CUST::C_NUM_COLS)) return false;
-    t.customer->AddColumn("C_FIRST",       16,  F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_MIDDLE",      2,   F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_LAST",        16,  F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_STREET_1",    20,  F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_STREET_2",    20,  F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_CITY",        20,  F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_STATE",       2,   F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_ZIP",         9,   F::MOT_TYPE_VARCHAR, false);
-    t.customer->AddColumn("C_PHONE",       16,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_FIRST",       17,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_MIDDLE",      3,   F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_LAST",        17,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_STREET_1",    21,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_STREET_2",    21,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_CITY",        21,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_STATE",       3,   F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_ZIP",         10,  F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_PHONE",       17,  F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_SINCE",       8,   F::MOT_TYPE_LONG,    false);
-    t.customer->AddColumn("C_CREDIT",      2,   F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_CREDIT",      3,   F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_CREDIT_LIM",  8,   F::MOT_TYPE_DOUBLE,  false);
     t.customer->AddColumn("C_DISCOUNT",    8,   F::MOT_TYPE_DOUBLE,  false);
     t.customer->AddColumn("C_BALANCE",     8,   F::MOT_TYPE_DOUBLE,  false);
     t.customer->AddColumn("C_YTD_PAYMENT", 8,   F::MOT_TYPE_DOUBLE,  false);
     t.customer->AddColumn("C_PAYMENT_CNT", 8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_DELIVERY_CNT",8,   F::MOT_TYPE_LONG,    false);
-    t.customer->AddColumn("C_DATA",        500, F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_DATA",        501, F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_KEY",         8,   F::MOT_TYPE_LONG,    true);
     if (!t.customer->InitRowPool()) return false;
     if (!t.customer->InitTombStonePool()) return false;
@@ -161,7 +161,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.history->AddColumn("H_W_ID",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_DATE",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_AMOUNT", 8,  F::MOT_TYPE_DOUBLE,  false);
-    t.history->AddColumn("H_DATA",   24, F::MOT_TYPE_VARCHAR, false);
+    t.history->AddColumn("H_DATA",   25, F::MOT_TYPE_VARCHAR, false);
     if (!t.history->InitRowPool()) return false;
     if (!t.history->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.history);
@@ -225,7 +225,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.order_line->AddColumn("OL_DELIVERY_D", 8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_AMOUNT",     8,  F::MOT_TYPE_DOUBLE,  false);
-    t.order_line->AddColumn("OL_DIST_INFO",  24, F::MOT_TYPE_VARCHAR, false);
+    t.order_line->AddColumn("OL_DIST_INFO",  25, F::MOT_TYPE_VARCHAR, false);
     t.order_line->AddColumn("OL_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.order_line->InitRowPool()) return false;
     if (!t.order_line->InitTombStonePool()) return false;
@@ -238,9 +238,9 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.item = new Table();
     if (!t.item->Init("item", "public.item", ITEM::I_NUM_COLS)) return false;
     t.item->AddColumn("I_IM_ID", 8,  F::MOT_TYPE_LONG,    false);
-    t.item->AddColumn("I_NAME",  24, F::MOT_TYPE_VARCHAR, false);
+    t.item->AddColumn("I_NAME",  25, F::MOT_TYPE_VARCHAR, false);
     t.item->AddColumn("I_PRICE", 8,  F::MOT_TYPE_DOUBLE,  false);
-    t.item->AddColumn("I_DATA",  50, F::MOT_TYPE_VARCHAR, false);
+    t.item->AddColumn("I_DATA",  51, F::MOT_TYPE_VARCHAR, false);
     t.item->AddColumn("I_KEY",   8,  F::MOT_TYPE_LONG,    true);
     if (!t.item->InitRowPool()) return false;
     if (!t.item->InitTombStonePool()) return false;
@@ -253,20 +253,20 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.stock = new Table();
     if (!t.stock->Init("stock", "public.stock", STK::S_NUM_COLS)) return false;
     t.stock->AddColumn("S_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
-    t.stock->AddColumn("S_DIST_01",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_02",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_03",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_04",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_05",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_06",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_07",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_08",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_09",    24, F::MOT_TYPE_VARCHAR, false);
-    t.stock->AddColumn("S_DIST_10",    24, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_01",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_02",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_03",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_04",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_05",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_06",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_07",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_08",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_09",    25, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DIST_10",    25, F::MOT_TYPE_VARCHAR, false);
     t.stock->AddColumn("S_YTD",        8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_ORDER_CNT",  8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_REMOTE_CNT", 8,  F::MOT_TYPE_LONG,    false);
-    t.stock->AddColumn("S_DATA",       50, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_DATA",       51, F::MOT_TYPE_VARCHAR, false);
     t.stock->AddColumn("S_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.stock->InitRowPool()) return false;
     if (!t.stock->InitTombStonePool()) return false;
@@ -547,6 +547,7 @@ static void PopulateWarehouseThread(PopulateArgs args)
     }
     printf("  [W%lu] Done.\n", (unsigned long)args.w_id);
     args.engine->GetSessionManager()->DestroySessionContext(session);
+    args.engine->OnCurrentThreadEnding();
 }
 
 bool PopulateData(MOTEngine* engine, TpccTables& tables, uint32_t num_warehouses, bool small_schema)
