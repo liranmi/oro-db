@@ -21,9 +21,9 @@ option(ORO_WITH_NUMA "Enable NUMA support (requires libnuma)" OFF)
 # =============================================================================
 # Masstree
 # =============================================================================
-# Check for patched masstree in third_party/masstree (with config.h from ./configure)
+# Check for patched masstree in third_party/masstree
 set(MASSTREE_SRC_DIR "${CMAKE_SOURCE_DIR}/third_party/masstree")
-if(EXISTS "${MASSTREE_SRC_DIR}/config.h")
+if(EXISTS "${MASSTREE_SRC_DIR}/masstree_config.h")
     message(STATUS "Using patched masstree from: ${MASSTREE_SRC_DIR}")
     set(ORO_HAS_MASSTREE ON)
 else()
@@ -83,14 +83,12 @@ set(STUB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/stubs/oro_masstree_adapter.cpp
 )
 
-# Masstree source files (from upstream kohler/masstree-beta)
+# Masstree source files (openEuler patched masstree)
 if(ORO_HAS_MASSTREE)
     set(MASSTREE_SOURCES
-        ${MASSTREE_SRC_DIR}/kvthread.cc
-        ${MASSTREE_SRC_DIR}/straccum.cc
-        ${MASSTREE_SRC_DIR}/str.cc
-        ${MASSTREE_SRC_DIR}/string.cc
-        ${MASSTREE_SRC_DIR}/compiler.cc
+        ${MASSTREE_SRC_DIR}/kvthread.cpp
+        ${MASSTREE_SRC_DIR}/straccum.cpp
+        ${MASSTREE_SRC_DIR}/string.cpp
     )
 endif()
 
