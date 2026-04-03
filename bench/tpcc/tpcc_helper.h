@@ -98,20 +98,19 @@ inline uint64_t NextHistoryKey() {
 }
 
 // ======================================================================
-// BuildSearchKey helper — matches the test_index.cpp pattern.
-// Creates a temp row, calls SetInternalKey, then BuildKey.
+// BuildSearchKey helper — creates a key with the raw packed uint64 value.
+//
+// In the InternalKey path, BuildKey does CpKey with the raw column bytes.
+// So the key is just the native-endian uint64 value, 8 bytes.
+// We fill it directly without creating a temp row.
 // Caller must destroy the returned key via ix->DestroyKey().
 // ======================================================================
 inline MOT::Key* BuildSearchKey(MOT::Index* ix, MOT::Table* table, uint64_t packed_key)
 {
+    (void)table;
     MOT::Key* key = ix->CreateNewKey();
     if (!key) return nullptr;
-    MOT::Row* tmp = table->CreateNewRow();
-    if (!tmp) { ix->DestroyKey(key); return nullptr; }
-    int lastCol = table->GetFieldCount() - 1;
-    tmp->SetInternalKey(lastCol, packed_key);
-    ix->BuildKey(table, tmp, key);
-    table->DestroyRow(tmp);
+    key->FillValue(reinterpret_cast<const uint8_t*>(&packed_key), sizeof(uint64_t), 0);
     return key;
 }
 
