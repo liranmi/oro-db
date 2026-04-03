@@ -78,23 +78,28 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     (void)small_schema;  // TODO: small schema variant
 
     // ---- WAREHOUSE (Clause 1.3.1) ----
+    // Key column (W_ID) must be LAST for InternalKey path in BuildKey
     t.warehouse = new Table();
     if (!t.warehouse->Init("warehouse", "public.warehouse", WH::W_NUM_COLS)) return false;
-    t.warehouse->AddColumn("W_ID",       8,   F::MOT_TYPE_LONG,    true);
-    t.warehouse->AddColumn("W_NAME",     10,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STREET_1", 20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STREET_2", 20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_CITY",     20,  F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_STATE",    2,   F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_ZIP",      9,   F::MOT_TYPE_VARCHAR, false);
-    t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);
-    t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);
+    t.warehouse->AddColumn("W_NAME",     10,  F::MOT_TYPE_VARCHAR, false);  // 0
+    t.warehouse->AddColumn("W_STREET_1", 20,  F::MOT_TYPE_VARCHAR, false);  // 1
+    t.warehouse->AddColumn("W_STREET_2", 20,  F::MOT_TYPE_VARCHAR, false);  // 2
+    t.warehouse->AddColumn("W_CITY",     20,  F::MOT_TYPE_VARCHAR, false);  // 3
+    t.warehouse->AddColumn("W_STATE",    2,   F::MOT_TYPE_VARCHAR, false);  // 4
+    t.warehouse->AddColumn("W_ZIP",      9,   F::MOT_TYPE_VARCHAR, false);  // 5
+    t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);  // 6
+    t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);  // 7
+    t.warehouse->AddColumn("W_ID",       8,   F::MOT_TYPE_LONG,    true);   // 8 KEY LAST
     if (!t.warehouse->InitRowPool()) return false;
     rc = txn->CreateTable(t.warehouse);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable warehouse: %s\n", RcToString(rc)); return false; }
-    t.ix_warehouse = MakeIndex(txn, t.warehouse, "ix_warehouse",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, WH_KEY_LEN,
-        {{WH::W_ID, K}});
+    {
+        int lastCol = t.warehouse->GetFieldCount() - 1;  // W_ID at position 8
+        uint32_t keyLen = t.warehouse->GetFieldSize(lastCol);  // 8 bytes raw
+        t.ix_warehouse = MakeIndex(txn, t.warehouse, "ix_warehouse",
+            IndexOrder::INDEX_ORDER_PRIMARY, true, keyLen,
+            {{lastCol, (uint16_t)keyLen}});
+    }
     if (!t.ix_warehouse) return false;
 
     // ---- DISTRICT (Clause 1.3.2) ----
@@ -326,17 +331,19 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
 {
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
+    // Column layout: data cols 0-7, key col 8 (W_ID last)
+    enum WC { NAME=0, ST1, ST2, CITY, STATE, ZIP, TAX, YTD, ID };
     Row* row = t.warehouse->CreateNewRow();
-    row->SetInternalKey(WH::W_ID, w_id);
     char buf[21];
-    rng.RandomString(buf, 6, 10); SetStringValue(row, WH::W_NAME, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_1, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_2, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_CITY, buf);
-    rng.RandomString(buf, 2, 2);   SetStringValue(row, WH::W_STATE, buf);
-    rng.RandomNumericString(buf, 9);SetStringValue(row, WH::W_ZIP, buf);
-    row->SetValue<double>(WH::W_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
-    row->SetValue<double>(WH::W_YTD, 300000.00);
+    rng.RandomString(buf, 6, 10);  SetStringValue(row, WC::NAME, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::ST1, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::ST2, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::CITY, buf);
+    rng.RandomString(buf, 2, 2);   SetStringValue(row, WC::STATE, buf);
+    rng.RandomNumericString(buf, 9);SetStringValue(row, WC::ZIP, buf);
+    row->SetValue<double>(WC::TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
+    row->SetValue<double>(WC::YTD, 300000.00);
+    row->SetInternalKey(WC::ID, w_id);
 
     RC rc = t.warehouse->InsertRow(row, txn);
     if (rc != RC_OK) {
@@ -354,6 +361,30 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
         return;
     }
     txn->EndTransaction();
+
+    // Verify: point query the warehouse we just inserted
+    enum WC2 { V_ID = 8 };  // key col position
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    Index* ix = t.warehouse->GetPrimaryIndex();
+    Key* vkey = ix->CreateNewKey();
+    Row* tmp = t.warehouse->CreateNewRow();
+    tmp->SetInternalKey(WC2::V_ID, w_id);
+    ix->BuildKey(t.warehouse, tmp, vkey);
+    t.warehouse->DestroyRow(tmp);
+
+    RC vrc = RC_OK;
+    Row* found = txn->RowLookupByKey(t.warehouse, AccessType::RD, vkey, vrc);
+    if (found) {
+        uint64_t read_id;
+        found->GetValue(WC2::V_ID, read_id);
+        fprintf(stderr, "VERIFY WH(%lu): OK  read_back_id=%lu\n",
+                (unsigned long)w_id, (unsigned long)read_id);
+    } else {
+        fprintf(stderr, "VERIFY WH(%lu): FAIL lookup=NULL rc=%d\n",
+                (unsigned long)w_id, (int)vrc);
+    }
+    ix->DestroyKey(vkey);
+    txn->Rollback();
 }
 
 static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
