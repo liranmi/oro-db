@@ -1,0 +1,397 @@
+/*
+ * oro-db unified benchmark CLI
+ *
+ * Supports two workloads: TPC-C and YCSB.
+ *
+ * Usage:
+ *   ./oro_bench --workload tpcc --warehouses 4 --threads 8 --duration 30
+ *   ./oro_bench --workload tpcc --small --warehouses 1 --threads 1
+ *   ./oro_bench --workload ycsb --profile A --records 1000000 --threads 16 --distribution zipfian
+ *   ./oro_bench --workload ycsb --profile E --records 100000 --threads 4 --scan-length 100
+ */
+
+#include <atomic>
+#include <chrono>
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <libgen.h>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+#include "mot_engine.h"
+#include "session_context.h"
+#include "session_manager.h"
+#include "txn.h"
+
+#include "bench_config.h"
+#include "bench_stats.h"
+#include "bench_util.h"
+#include "tpcc_workload.h"
+#include "tpcc_txn.h"
+#include "tpcc_config.h"
+#include "tpcc_helper.h"
+#include "ycsb_workload.h"
+#include "ycsb_txn.h"
+#include "ycsb_config.h"
+#include "ycsb_generator.h"
+
+using Clock = std::chrono::high_resolution_clock;
+
+// ---------------------------------------------------------------------------
+// CLI helpers
+// ---------------------------------------------------------------------------
+
+static void PrintUsage(const char* prog)
+{
+    printf("Usage: %s --workload tpcc|ycsb [options]\n\n", prog);
+    printf("Common options:\n");
+    printf("  --threads N          Worker threads (default: 1)\n");
+    printf("  --duration N         Benchmark duration in seconds (default: 10)\n");
+    printf("  --json FILE          Write results to JSON file\n");
+    printf("  --config FILE        Override mot.conf path\n");
+    printf("\nTPC-C options:\n");
+    printf("  --warehouses N       Number of warehouses (default: 1)\n");
+    printf("  --small              Use reduced TPC-C schema\n");
+    printf("\nYCSB options:\n");
+    printf("  --profile A|B|C|D|E|F   Workload profile (default: A)\n");
+    printf("  --records N             Number of records (default: 1000000)\n");
+    printf("  --distribution uniform|zipfian (default: zipfian)\n");
+    printf("  --fields N              Fields per record (default: 10)\n");
+    printf("  --field-length N        Bytes per field (default: 100)\n");
+    printf("  --ops-per-txn N         Operations per transaction (default: 16)\n");
+    printf("  --scan-length N         Max scan length for profile E (default: 100)\n");
+}
+
+static bool MatchArg(const char* arg, const char* name)
+{
+    return strcmp(arg, name) == 0;
+}
+
+static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
+{
+    bool workload_set = false;
+
+    for (int i = 1; i < argc; ++i) {
+        if (MatchArg(argv[i], "--help") || MatchArg(argv[i], "-h")) {
+            PrintUsage(argv[0]);
+            return false;
+        }
+        if (MatchArg(argv[i], "--workload") && i + 1 < argc) {
+            ++i;
+            if (MatchArg(argv[i], "tpcc")) {
+                cfg.workload = oro::WorkloadType::TPCC;
+            } else if (MatchArg(argv[i], "ycsb")) {
+                cfg.workload = oro::WorkloadType::YCSB;
+            } else {
+                fprintf(stderr, "Error: unknown workload '%s' (expected tpcc or ycsb)\n", argv[i]);
+                return false;
+            }
+            workload_set = true;
+        } else if (MatchArg(argv[i], "--threads") && i + 1 < argc) {
+            cfg.threads = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--duration") && i + 1 < argc) {
+            cfg.duration_sec = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--json") && i + 1 < argc) {
+            cfg.json_output = true;
+            cfg.json_file = argv[++i];
+        } else if (MatchArg(argv[i], "--config") && i + 1 < argc) {
+            cfg.config_path = argv[++i];
+        // TPC-C flags
+        } else if (MatchArg(argv[i], "--warehouses") && i + 1 < argc) {
+            cfg.tpcc_warehouses = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--small")) {
+            cfg.tpcc_small_schema = true;
+        // YCSB flags
+        } else if (MatchArg(argv[i], "--profile") && i + 1 < argc) {
+            ++i;
+            switch (argv[i][0]) {
+                case 'A': case 'a': cfg.ycsb_profile = oro::YcsbProfile::A; break;
+                case 'B': case 'b': cfg.ycsb_profile = oro::YcsbProfile::B; break;
+                case 'C': case 'c': cfg.ycsb_profile = oro::YcsbProfile::C; break;
+                case 'D': case 'd': cfg.ycsb_profile = oro::YcsbProfile::D; break;
+                case 'E': case 'e': cfg.ycsb_profile = oro::YcsbProfile::E; break;
+                case 'F': case 'f': cfg.ycsb_profile = oro::YcsbProfile::F; break;
+                default:
+                    fprintf(stderr, "Error: unknown YCSB profile '%s'\n", argv[i]);
+                    return false;
+            }
+        } else if (MatchArg(argv[i], "--records") && i + 1 < argc) {
+            cfg.ycsb_record_count = (uint64_t)atol(argv[++i]);
+        } else if (MatchArg(argv[i], "--distribution") && i + 1 < argc) {
+            ++i;
+            if (MatchArg(argv[i], "uniform")) {
+                cfg.ycsb_distribution = oro::Distribution::UNIFORM;
+            } else if (MatchArg(argv[i], "zipfian")) {
+                cfg.ycsb_distribution = oro::Distribution::ZIPFIAN;
+            } else {
+                fprintf(stderr, "Error: unknown distribution '%s'\n", argv[i]);
+                return false;
+            }
+        } else if (MatchArg(argv[i], "--fields") && i + 1 < argc) {
+            cfg.ycsb_field_count = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--field-length") && i + 1 < argc) {
+            cfg.ycsb_field_length = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--ops-per-txn") && i + 1 < argc) {
+            cfg.ycsb_ops_per_txn = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--scan-length") && i + 1 < argc) {
+            cfg.ycsb_scan_length = (uint32_t)atoi(argv[++i]);
+        } else {
+            fprintf(stderr, "Error: unknown argument '%s'\n", argv[i]);
+            PrintUsage(argv[0]);
+            return false;
+        }
+    }
+
+    if (!workload_set) {
+        fprintf(stderr, "Error: --workload is required\n\n");
+        PrintUsage(argv[0]);
+        return false;
+    }
+
+    return true;
+}
+
+static const char* WorkloadName(oro::WorkloadType w)
+{
+    return (w == oro::WorkloadType::TPCC) ? "TPC-C" : "YCSB";
+}
+
+static const char* ProfileName(oro::YcsbProfile p)
+{
+    switch (p) {
+        case oro::YcsbProfile::A: return "A";
+        case oro::YcsbProfile::B: return "B";
+        case oro::YcsbProfile::C: return "C";
+        case oro::YcsbProfile::D: return "D";
+        case oro::YcsbProfile::E: return "E";
+        case oro::YcsbProfile::F: return "F";
+    }
+    return "?";
+}
+
+static const char* DistributionName(oro::Distribution d)
+{
+    return (d == oro::Distribution::UNIFORM) ? "uniform" : "zipfian";
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+int main(int argc, char* argv[])
+{
+    oro::BenchConfig cfg;
+    if (!ParseConfig(argc, argv, cfg))
+        return 1;
+
+    // --- Print configuration ---
+    printf("=== oro-db benchmark ===\n");
+    printf("  Workload:   %s\n", WorkloadName(cfg.workload));
+    printf("  Threads:    %u\n", cfg.threads);
+    printf("  Duration:   %u sec\n", cfg.duration_sec);
+
+    if (cfg.workload == oro::WorkloadType::TPCC) {
+        printf("  Warehouses: %u\n", cfg.tpcc_warehouses);
+        if (cfg.tpcc_small_schema)
+            printf("  Schema:     small (reduced columns)\n");
+    } else {
+        printf("  Profile:    %s\n", ProfileName(cfg.ycsb_profile));
+        printf("  Records:    %lu\n", (unsigned long)cfg.ycsb_record_count);
+        printf("  Distrib:    %s\n", DistributionName(cfg.ycsb_distribution));
+        printf("  Fields:     %u x %u bytes\n", cfg.ycsb_field_count, cfg.ycsb_field_length);
+        printf("  Ops/txn:    %u\n", cfg.ycsb_ops_per_txn);
+        if (cfg.ycsb_profile == oro::YcsbProfile::E)
+            printf("  Scan len:   %u\n", cfg.ycsb_scan_length);
+    }
+    printf("\n");
+
+    // --- Initialize MOT engine ---
+    printf("[1] Initializing MOT engine...\n");
+
+    const char* cfgPath = nullptr;
+    char cfgBuf[PATH_MAX];
+
+    if (!cfg.config_path.empty()) {
+        cfgPath = cfg.config_path.c_str();
+    } else {
+        char exePath[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
+        if (len > 0) {
+            exePath[len] = '\0';
+            snprintf(cfgBuf, sizeof(cfgBuf), "%s/../config/mot.conf", dirname(exePath));
+            cfgPath = cfgBuf;
+        }
+    }
+
+    MOT::MOTEngine* engine = MOT::MOTEngine::CreateInstance(cfgPath);
+    if (!engine) {
+        fprintf(stderr, "FATAL: Failed to create MOT engine\n");
+        return 1;
+    }
+    printf("    Engine initialized.\n\n");
+
+    // --- Create schema and populate data ---
+    printf("[2] Creating schema...\n");
+
+    // DDL session
+    MOT::SessionContext* ddl_session = engine->GetSessionManager()->CreateSessionContext();
+    if (!ddl_session) {
+        fprintf(stderr, "FATAL: Failed to create DDL session\n");
+        MOT::MOTEngine::DestroyInstance();
+        return 1;
+    }
+    MOT::TxnManager* ddl_txn = ddl_session->GetTxnManager();
+
+    oro::tpcc::TpccTables tpcc_tables;
+    oro::ycsb::YcsbTables ycsb_tables;
+
+    if (cfg.workload == oro::WorkloadType::TPCC) {
+        ddl_txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+        if (!oro::tpcc::CreateSchema(ddl_txn, tpcc_tables, cfg.tpcc_small_schema)) {
+            fprintf(stderr, "FATAL: TPC-C schema creation failed\n");
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        MOT::RC rc = ddl_txn->Commit();
+        if (rc != MOT::RC_OK) {
+            fprintf(stderr, "FATAL: Schema commit failed: rc=%u\n", (unsigned)rc);
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        printf("    TPC-C schema created.\n");
+
+        printf("[3] Populating TPC-C data (%u warehouses)...\n", cfg.tpcc_warehouses);
+        if (!oro::tpcc::PopulateData(engine, tpcc_tables, cfg.tpcc_warehouses, cfg.tpcc_small_schema)) {
+            fprintf(stderr, "FATAL: TPC-C data population failed\n");
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        printf("    Data population complete.\n\n");
+    } else {
+        ddl_txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+        if (!oro::ycsb::CreateSchema(ddl_txn, ycsb_tables, cfg.ycsb_field_count, cfg.ycsb_field_length)) {
+            fprintf(stderr, "FATAL: YCSB schema creation failed\n");
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        MOT::RC rc = ddl_txn->Commit();
+        if (rc != MOT::RC_OK) {
+            fprintf(stderr, "FATAL: Schema commit failed: rc=%u\n", (unsigned)rc);
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        printf("    YCSB schema created.\n");
+
+        printf("[3] Populating YCSB data (%lu records)...\n", (unsigned long)cfg.ycsb_record_count);
+        if (!oro::ycsb::PopulateData(engine, ycsb_tables, cfg.ycsb_record_count,
+                                     cfg.ycsb_field_count, cfg.ycsb_field_length)) {
+            fprintf(stderr, "FATAL: YCSB data population failed\n");
+            engine->GetSessionManager()->DestroySessionContext(ddl_session);
+            MOT::MOTEngine::DestroyInstance();
+            return 1;
+        }
+        printf("    Data population complete.\n\n");
+    }
+
+    // Done with DDL session
+    engine->GetSessionManager()->DestroySessionContext(ddl_session);
+    ddl_session = nullptr;
+
+    // --- Run benchmark ---
+    printf("[4] Running %s benchmark for %u seconds with %u threads...\n",
+           WorkloadName(cfg.workload), cfg.duration_sec, cfg.threads);
+
+    std::atomic<bool> running{true};
+    std::vector<oro::ThreadStats> all_stats(cfg.threads);
+    std::vector<std::thread> workers;
+    workers.reserve(cfg.threads);
+
+    auto start_time = Clock::now();
+
+    if (cfg.workload == oro::WorkloadType::TPCC) {
+        // TPC-C transaction execution is not yet implemented.
+        printf("    TPC-C transaction execution not yet implemented.\n");
+        printf("    Schema creation and data population completed successfully.\n");
+    } else {
+        // YCSB worker threads
+        for (uint32_t t = 0; t < cfg.threads; ++t) {
+            workers.emplace_back([&, t]() {
+                MOT::SessionContext* session = engine->GetSessionManager()->CreateSessionContext();
+                if (!session) {
+                    fprintf(stderr, "ERROR: Worker %u failed to create session\n", t);
+                    return;
+                }
+                MOT::TxnManager* txn = session->GetTxnManager();
+                oro::ThreadStats& stats = all_stats[t];
+                oro::FastRandom rng(t + 1);
+
+                oro::ycsb::UniformGenerator uniform_gen(cfg.ycsb_record_count);
+                oro::ycsb::ZipfianGenerator  zipfian_gen(cfg.ycsb_record_count, cfg.ycsb_zipfian_theta);
+
+                while (running.load(std::memory_order_relaxed)) {
+                    MOT::RC rc = oro::ycsb::RunYcsbTxn(
+                        txn, ycsb_tables, cfg.ycsb_profile,
+                        cfg.ycsb_distribution,
+                        (cfg.ycsb_distribution == oro::Distribution::UNIFORM)
+                            ? static_cast<void*>(&uniform_gen)
+                            : static_cast<void*>(&zipfian_gen),
+                        rng, cfg.ycsb_field_count, cfg.ycsb_field_length,
+                        cfg.ycsb_ops_per_txn, cfg.ycsb_scan_length);
+
+                    if (rc == MOT::RC_OK)
+                        stats.commits++;
+                    else
+                        stats.aborts++;
+                }
+
+                engine->GetSessionManager()->DestroySessionContext(session);
+            });
+        }
+
+        // Timer thread
+        std::thread timer([&]() {
+            std::this_thread::sleep_for(std::chrono::seconds(cfg.duration_sec));
+            running.store(false, std::memory_order_relaxed);
+        });
+
+        timer.join();
+        for (auto& w : workers)
+            w.join();
+    }
+
+    auto end_time = Clock::now();
+    double elapsed_sec = std::chrono::duration<double>(end_time - start_time).count();
+
+    // --- Aggregate and print results ---
+    bool is_tpcc = (cfg.workload == oro::WorkloadType::TPCC);
+    oro::AggregateStats agg = oro::Aggregate(all_stats, elapsed_sec);
+    oro::PrintStats(agg, is_tpcc);
+
+    // Optional JSON output
+    if (cfg.json_output) {
+        std::string json = oro::StatsToJson(agg, is_tpcc);
+        FILE* fp = fopen(cfg.json_file.c_str(), "w");
+        if (fp) {
+            fwrite(json.data(), 1, json.size(), fp);
+            fclose(fp);
+            printf("  Results written to %s\n", cfg.json_file.c_str());
+        } else {
+            fprintf(stderr, "WARNING: Could not open '%s' for writing\n", cfg.json_file.c_str());
+        }
+    }
+
+    // --- Cleanup ---
+    printf("\n[5] Cleaning up...\n");
+    MOT::MOTEngine::DestroyInstance();
+    printf("    Done.\n");
+
+    return 0;
+}
