@@ -11,3 +11,8 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
+
+# Generated masstree config files
+third_party/masstree/config.h
+third_party/masstree/config.h.in
+third_party/masstree/configure
