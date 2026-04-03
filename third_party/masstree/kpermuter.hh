@@ -103,6 +103,7 @@ template <int W> class kpermuter {
     int operator[](int i) const {
         return (x_ >> ((i << 2) + 4)) & 15;
     }
+    // Get next free entry in permutation
     int back() const {
         return (*this)[W - 1];
     }
@@ -268,6 +269,7 @@ template <int W> class kpermuter {
         return !(*this == x);
     }
 
+    // The number of ikeys the leaf currently holds. Each ikey points to a value or to a lower layer
     static inline int size(value_type p) {
         return p & 15;
     }

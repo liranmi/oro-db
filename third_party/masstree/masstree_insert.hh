@@ -16,55 +16,14 @@
 #ifndef MASSTREE_INSERT_HH
 #define MASSTREE_INSERT_HH
 #include "masstree_get.hh"
-#include "masstree_remove.hh"  // MOT: needed for finish_remove called by finish()
 #include "masstree_split.hh"
+
 namespace Masstree {
 
 template <typename P>
-bool tcursor<P>::find_insert(threadinfo& ti)
+bool tcursor<P>::find_insert(threadinfo& ti, bool & found)
 {
-    find_locked(ti);
-    original_n_ = n_;
-    original_v_ = n_->full_unlocked_version_value();
-
-    // maybe we found it
-    if (state_)
-        return true;
-
-    // otherwise mark as inserted but not present
-    state_ = 2;
-
-    // maybe we need a new layer
-    if (kx_.p >= 0)
-        return make_new_layer(ti);
-
-    // mark insertion if we are changing modification state
-    if (unlikely(n_->modstate_ != leaf<P>::modstate_insert)) {
-        masstree_invariant(n_->modstate_ == leaf<P>::modstate_remove);
-        n_->mark_insert();
-        n_->modstate_ = leaf<P>::modstate_insert;
-    }
-
-    // try inserting into this node
-    if (n_->size() < n_->width) {
-        kx_.p = permuter_type(n_->permutation_).back();
-        // don't inappropriately reuse position 0, which holds the ikey_bound
-        if (likely(kx_.p != 0) || !n_->prev_ || n_->ikey_bound() == ka_.ikey()) {
-            n_->assign(kx_.p, ka_, ti);
-            return false;
-        }
-    }
-
-    // otherwise must split
-    return make_split(ti);
-}
-
-// MOT: overload with 'found' output parameter.
-// Returns true on success, false on allocation failure.
-// Sets 'found' to true if key already existed.
-template <typename P>
-bool tcursor<P>::find_insert(threadinfo& ti, bool& found)
-{
+    found = false;
     find_locked(ti);
     original_n_ = n_;
     original_v_ = n_->full_unlocked_version_value();
@@ -74,13 +33,14 @@ bool tcursor<P>::find_insert(threadinfo& ti, bool& found)
         found = true;
         return true;
     }
-    found = false;
 
     // otherwise mark as inserted but not present
     state_ = 2;
 
     // maybe we need a new layer
     if (kx_.p >= 0)
+        /* Key with same prefix (of size ikey_size * layer height) was found but with different suffix. we need to create at least one new layer that will contain both keys
+           n_.lv[kx_.p] will be replaced with pointer to a new lower layer and n_.keylenx_[kx.p] will be replaced with 128 (defined by layer_keylenx constant) */
         return make_new_layer(ti);
 
     // mark insertion if we are changing modification state
@@ -90,16 +50,26 @@ bool tcursor<P>::find_insert(threadinfo& ti, bool& found)
         n_->modstate_ = leaf<P>::modstate_insert;
     }
 
-    // try inserting into this node
+    // try inserting into this leaf
     if (n_->size() < n_->width) {
         kx_.p = permuter_type(n_->permutation_).back();
+        /* don't inappropriately reuse position 0, which holds the ikey_bound. If this is the case, make_split will handle it.
+           Before leaf's first split, ikey0_[0] (ikey_bound) might not contain the lower ikey value in the leaf as it doesn't have a parent yet. After the first split,
+            The new leaf ikey0_[0] will contain the lower ikey value in the right leaf and will be used as a boundary in the parent internode.
+           In case the key in slot 0 will be deleted, the ikey0_[0] ikey value will be kept (to avoid changing the parent's boundary) and entry 0 wont be used anymore.
+           This rule has 2 exceptions:
+             1. If leaf is the most left leaf in the btree which means ikey0_[0] is not used as a boundary. (!n_->prev_)
+             2. If a new key, with ikey == ikey0_[0], is added. In this case, we can re-use slot 0 as we won't change the tree's structure. (n_->ikey_bound() == ka_.ikey()) */
         if (likely(kx_.p != 0) || !n_->prev_ || n_->ikey_bound() == ka_.ikey()) {
-            n_->assign(kx_.p, ka_, ti);
-            return true;  // MOT: success (not found, newly inserted)
+            // if n_->assign fails, we dont have enough space to place the suffix and we failed while allocating larger ksuffix.
+            bool res = n_->assign(kx_.p, ka_, ti);
+            if (!res)
+                ti.set_last_error(MT_MERR_FIND_INSERT_ASSIGN_SUFFIX);
+            return res;
         }
     }
 
-    // otherwise must split
+    // otherwise we might need to split
     return make_split(ti);
 }
 
@@ -110,10 +80,16 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     int kcmp = oka.compare(ka_);
 
     // Create a twig of nodes until the suffixes diverge
+    // For each ikey_size bytes (currently 8) that matches in both key's suffixes, we will need to create a new layer
     leaf_type* twig_head = n_;
     leaf_type* twig_tail = n_;
+    leaf_type* nl = nullptr;
     while (kcmp == 0) {
-        leaf_type* nl = leaf_type::make_root(0, twig_tail, ti);
+        nl = leaf_type::make_root(0, twig_tail, ti);
+        if (!nl) {
+            ti.set_last_error(MT_MERR_MAKE_NEW_LAYER_LEAF_ALLOC_1);
+            goto make_new_layer_cleanup;
+        }
         nl->assign_initialize_for_layer(0, oka);
         if (twig_head != n_)
             twig_tail->lv_[0] = nl;
@@ -121,9 +97,12 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
             twig_head = nl;
         nl->permutation_ = permuter_type::make_sorted(1);
         twig_tail = nl;
+#ifndef MASSTREE_OBSOLETE_CODE
         new_nodes_.emplace_back(nl, nl->full_unlocked_version_value());
+#endif
         oka.shift();
         ka_.shift();
+        // Compare the ikey only. if ikey matches and one or more of the suffixes != 0, compare using suffix size
         kcmp = oka.compare(ka_);
     }
 
@@ -135,9 +114,24 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
             + n_->iksuf_[0].overhead(n_->width);
     else
         ksufsize = 0;
-    leaf_type *nl = leaf_type::make_root(ksufsize, twig_tail, ti);
-    nl->assign_initialize(0, kcmp < 0 ? oka : ka_, ti);
-    nl->assign_initialize(1, kcmp < 0 ? ka_ : oka, ti);
+    nl = leaf_type::make_root(ksufsize, twig_tail, ti);
+    if (!nl) {
+        ti.set_last_error(MT_MERR_MAKE_NEW_LAYER_LEAF_ALLOC_2);
+        goto make_new_layer_cleanup;
+    }
+    // Even though the total ksuffix size was already provided to make_root, more memory might be allocated in assign_initialize calls
+    //  as leaf internal suffix is bounded by 128 (+ 64 alignment).
+    // We will hit this issue (for sure) if ka_.suffix_length() + oka.suffix_length() > 192, but might hit it also when ka_.suffix_length() + oka.suffix_length() > 128.
+    if (!nl->assign_initialize(0, kcmp < 0 ? oka : ka_, ti)) {
+        ti.set_last_error(MT_MERR_MAKE_NEW_LAYER_KSUFFIX_ALLOC_1);
+        goto make_new_layer_cleanup;
+    }
+
+    if (!nl->assign_initialize(1, kcmp < 0 ? ka_ : oka, ti)) {
+        ti.set_last_error(MT_MERR_MAKE_NEW_LAYER_KSUFFIX_ALLOC_2);
+        goto make_new_layer_cleanup;
+    }
+
     nl->lv_[kcmp > 0] = n_->lv_[kx_.p];
     nl->lock(*nl, ti.lock_fence(tc_leaf_lock));
     if (kcmp < 0)
@@ -167,6 +161,33 @@ bool tcursor<P>::make_new_layer(threadinfo& ti) {
     n_->unlock();
     n_ = nl;
     kx_.i = kx_.p = kcmp < 0;
+    return true;
+
+make_new_layer_cleanup:
+    // n_ was not updated yet. It contains the original key (without any change). it will be unlocked later on (in lp.finish)
+    if (nl) {
+        // nl is not connected yet to twig_tail. handle it seperatly
+        nl->deallocate(ti);
+        nl = nullptr;
+    }
+
+    // Leafs in leaf list (starts from twig_head) has no suffix. In addition, they are not connected to the masstree yet, so we dont need to hold any locks.
+    if (twig_head != n_) {
+        while (twig_head) {
+            masstree_invariant(!twig_head->ksuf_);
+            masstree_invariant(twig_head->size() == 1);
+            masstree_invariant(twig_head->is_layer(0));
+            masstree_invariant(twig_head->stable_annotated(ti.stable_fence()).is_root());
+            leaf_type *next_layer_leaf = (leaf_type *)twig_head->lv_[0].layer();
+            twig_head->lv_[0] = nullptr;
+            // Remove it directly. no need to use rcu.
+            ti.deallocate(twig_head, sizeof(*twig_head) /* Being ignored */, memtag_masstree_leaf);
+            // Stop if we just finished to handle last leaf in list (twig_tail).
+            // Validating that next_layer_leaf != null wont work as twig_tail->lv_[0] == twig_tail.
+            twig_head = (twig_head == twig_tail) ? nullptr : next_layer_leaf;
+        }
+    }
+
     return false;
 }
 
@@ -185,15 +206,20 @@ inline void tcursor<P>::finish(int state, threadinfo& ti)
 {
     if (state < 0 && state_ == 1) {
         if (finish_remove(ti))
-            return;
+            goto clean_ti;
     } else if (state > 0 && state_ == 2)
         finish_insert();
     // we finally know this!
     if (n_ == original_n_)
         updated_v_ = n_->full_unlocked_version_value();
+#ifndef MASSTREE_OBSOLETE_CODE
     else
         new_nodes_.emplace_back(n_, n_->full_unlocked_version_value());
+#endif
     n_->unlock();
+
+clean_ti:
+    ti.add_nodes_to_gc();
 }
 
 } // namespace Masstree

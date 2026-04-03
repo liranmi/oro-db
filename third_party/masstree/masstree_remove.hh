@@ -120,10 +120,11 @@ struct gc_layer_rcu_callback : public P::threadinfo_type::mrcu_callback {
     node_base<P>* root_;
     int len_;
     char s_[0];
-    gc_layer_rcu_callback(node_base<P>* root, Str prefix)
+    gc_layer_rcu_callback(node_base<P>* root, Str prefix, size_t size = 0)
         : root_(root), len_(prefix.length()) {
         memcpy(s_, prefix.data(), len_);
     }
+    size_t operator()(bool drop_index) { return 0; }
     void operator()(threadinfo& ti);
     size_t size() const {
         return len_ + sizeof(*this);
@@ -143,8 +144,9 @@ void gc_layer_rcu_callback<P>::operator()(threadinfo& ti)
         if (!do_remove || !lp.finish_remove(ti)) {
             lp.n_->unlock();
         }
-        ti.deallocate(this, size(), memtag_masstree_gc);
     }
+    ti.deallocate(this, size(), memtag_masstree_gc);
+    ti.add_nodes_to_gc();
 }
 
 template <typename P>
@@ -171,18 +173,20 @@ bool tcursor<P>::finish_remove(threadinfo& ti) {
     if (perm.size()) {
         return false;
     } else {
-        return remove_leaf(n_, root_, ka_.prefix_string(), ti);
+        return remove_leaf(n_, root_ref_, ka_.prefix_string(), ti);
     }
 }
 
 template <typename P>
-bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type* root,
+bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type** root_ref,
                              Str prefix, threadinfo& ti)
 {
     if (!leaf->prev_) {
         if (!leaf->next_.ptr && !prefix.empty()) {
-            gc_layer_rcu_callback<P>::make(root, prefix, ti);
+            // Leaf doesn't hold any keys, not in the highest layer and has no neighbors --> entire layer can be destroyed
+            gc_layer_rcu_callback_ng<P>::make(root_ref, prefix, ti);
         }
+        // Leaf has neighbor to the right (next) or leaf in the highest layer. do nothing
         return false;
     }
 
@@ -208,12 +212,21 @@ bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type* root,
     // Unlink leaf from doubly-linked leaf list
     btree_leaflink<leaf_type>::unlink(leaf);
 
+    // leaf->prev_ != NULL
+    leaf_type *prev = leaf->prev_;
+    if (!prev->prev_ && !prev->next_.ptr && prev->size() == 0 && !prefix.empty() ) {
+        // After removing the leaf, only the most left leaf remains (single leaf). We can remove the layer as the most left leaf
+        //  doesn't hold any keys and layer is not the highest one.
+        gc_layer_rcu_callback_ng<P>::make(root_ref, prefix, ti);
+    }
+
     // Remove leaf from tree, collapse trivial chains, and rewrite
     // ikey bounds.
     ikey_type ikey = leaf->ikey_bound();
     node_type* n = leaf;
     node_type* replacement = nullptr;
 
+    // Leaf has neighbor to the left (leaf->prev_ != NULL) --> it has a parent
     while (true) {
         internode_type *p = n->locked_parent(ti);
         p->mark_insert();
@@ -228,6 +241,7 @@ bool tcursor<P>::remove_leaf(leaf_type* leaf, node_type* root,
         if (replacement) {
             replacement->set_parent(p);
         } else if (kp > 0) {
+            // No leaf replacement for the removed leaf. Remove the leaf from parent's key boundary and child arrays
             p->shift_down(kp - 1, kp, p->nkeys_ - kp);
             --p->nkeys_;
         }
@@ -282,8 +296,10 @@ struct destroy_rcu_callback : public P::threadinfo_type::mrcu_callback {
     typedef typename node_base<P>::internode_type internode_type;
     node_base<P>* root_;
     int count_;
-    destroy_rcu_callback(node_base<P>* root)
-        : root_(root), count_(0) {
+    destroy_value_cb_func destroyValueCB_ = nullptr;
+
+    destroy_rcu_callback(node_base<P>* root, destroy_value_cb_func func)
+        : root_(root), count_(0), destroyValueCB_(func) {
     }
     void operator()(threadinfo& ti);
     static void make(node_base<P>* root, Str prefix, threadinfo& ti);
@@ -338,8 +354,12 @@ void destroy_rcu_callback<P>::operator()(threadinfo& ti) {
             typename leaf_type::permuter_type perm = l->permutation();
             for (int i = 0; i != l->size(); ++i) {
                 int p = perm[i];
-                if (l->is_layer(p))
+                if (l->is_layer(p)) {
                     enqueue(l->lv_[p].layer(), tailp);
+                } else {
+                    if (destroyValueCB_)
+                        destroyValueCB_(l->lv_[p].value());
+                }
             }
             l->deallocate(ti);
         } else {
@@ -358,7 +378,7 @@ template <typename P>
 void basic_table<P>::destroy(threadinfo& ti) {
     if (root_) {
         void* data = ti.allocate(sizeof(destroy_rcu_callback<P>), memtag_masstree_gc);
-        destroy_rcu_callback<P>* cb = new(data) destroy_rcu_callback<P>(root_);
+        destroy_rcu_callback<P>* cb = new(data) destroy_rcu_callback<P>(root_, destroyValue_CB_);
         ti.rcu_register(cb);
         root_ = 0;
     }

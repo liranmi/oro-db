@@ -47,7 +47,7 @@ class scanstackelt {
         return n.n_->compare_key(k, p);
     }
 
-    // MOT: members made public for MasstreeIterator direct access
+  private:
     node_base<P>* root_;
     leaf<P>* n_;
     nodeversion_type v_;
@@ -61,17 +61,15 @@ class scanstackelt {
     }
 
     template <typename H>
-    int find_initial(H& helper, key_type& ka, bool emit_equal,
+    int find_initial(H& helper, key_type& ka, bool emit_equal, bool& found,
                      leafvalue_type& entry, threadinfo& ti);
-    // MOT: overload with 'found' output parameter
-    template <typename H>
-    int find_initial(H& helper, key_type& ka, bool emit_equal,
-                     bool& found, leafvalue_type& entry, threadinfo& ti);
     template <typename H>
     int find_retry(H& helper, key_type& ka, threadinfo& ti);
     template <typename H>
     int find_next(H& helper, key_type& ka, leafvalue_type& entry);
 
+    // Return the location of the key in key's related arrays (ikey0_, lv_ and  keylenx_)
+    // The unsigned trick is to handle ki_ < 0;
     int kp() const {
         if (unsigned(ki_) < unsigned(perm_.size()))
             return perm_[ki_];
@@ -80,8 +78,7 @@ class scanstackelt {
     }
 
     template <typename PX> friend class basic_table;
-    // MOT: allow MasstreeIterator access
-    template <bool CI, bool FW, typename PX> friend class MasstreeIterator;
+    template<bool CONST_ITERATOR, bool FORWARD, typename PX> friend class MasstreeIterator;
 };
 
 struct forward_scan_helper {
@@ -91,6 +88,7 @@ struct forward_scan_helper {
     template <typename K> bool is_duplicate(const K &k,
                                             typename K::ikey_type ikey,
                                             int keylenx) const {
+        // k.ikey < ikey --> k.compare(ikey, keylenx) < 0
         return k.compare(ikey, keylenx) >= 0;
     }
     template <typename K, typename N> int lower(const K &k, const N *n) const {
@@ -135,17 +133,22 @@ struct reverse_scan_helper {
     template <typename K> bool is_duplicate(const K &k,
                                             typename K::ikey_type ikey,
                                             int keylenx) const {
+        // k.ikey < ikey --> k.compare(ikey, keylenx) < 0
         return k.compare(ikey, keylenx) <= 0 && !upper_bound_;
     }
     template <typename K, typename N> int lower(const K &k, const N *n) const {
         if (upper_bound_)
             return n->size() - 1;
+        // If kx.p < 0, the provided ikey was not found. It means that kx.i is pointing to an index which it's ikey is larger than our ikey.
+        // It also means that the ikey in index (kx.i - 1) (if exists) is the largest ikey in this node that smaller than our key.
         key_indexed_position kx = N::bound_type::lower_by(k, *n, *n);
         return kx.i - (kx.p < 0);
     }
     template <typename K, typename N>
     key_indexed_position lower_with_position(const K &k, const N *n) const {
         key_indexed_position kx = N::bound_type::lower_by(k, *n, *n);
+        // If kx.p < 0, the provided ikey was not found. It means that kx.i is pointing to an index which it's ikey is larger than our ikey.
+        // It also means that the ikey in index (kx.i - 1) (if exists) is the largest ikey in this node that smaller than our key.
         kx.i -= kx.p < 0;
         return kx;
     }
@@ -157,6 +160,7 @@ struct reverse_scan_helper {
     }
     template <typename N, typename K>
     N *advance(const N *n, K &k) const {
+        // Change the ikey of our search key to be the lowest ikey in the leaf. If this is the most left leaf, it could be any of the values that are currently or used to be in this leaf.
         k.assign_store_ikey(n->ikey_bound());
         k.assign_store_length(0);
         return n->prev_;
@@ -184,7 +188,7 @@ struct reverse_scan_helper {
 
 
 template <typename P> template <typename H>
-int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal,
+int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal, bool& found,
                                   leafvalue_type& entry, threadinfo& ti)
 {
     key_indexed_position kx;
@@ -192,27 +196,36 @@ int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal,
     char suffixbuf[MASSTREE_MAXKEYLEN];
     Str suffix;
 
+ // Goes down to the leaf
  retry_root:
     n_ = root_->reach_leaf(ka, v_, ti);
 
  retry_node:
     if (v_.deleted())
         goto retry_root;
+
+    // Finds the key inside the leaf
     n_->prefetch();
     perm_ = n_->permutation();
 
     kx = helper.lower_with_position(ka, this);
+    // kx.i - index of the key inside the permutation. If the key was not found, index of the closest key (depends on the helper's implementation).
+    // kx.p - position of the given key in the child's array (perm[kx.i]). -1 if was not found
+
+    // If a valid position for the key is found, it is being recorded
     if (kx.p >= 0) {
         keylenx = n_->keylenx_[kx.p];
         fence();
         entry = n_->lv_[kx.p];
         entry.prefetch(keylenx);
         if (n_->keylenx_has_ksuf(keylenx)) {
+            // There is only one key in the tree with our key's prefix
             suffix = n_->ksuf(kx.p);
             memcpy(suffixbuf, suffix.s, suffix.len);
             suffix.s = suffixbuf;
         }
     }
+    // If the leaf changes we have to find the new correct leaf and retry
     if (n_->has_changed(v_)) {
         ti.mark(tc_leaf_retry);
         n_ = n_->advance_to_key(ka, v_, ti);
@@ -221,34 +234,42 @@ int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal,
 
     ki_ = kx.i;
     if (kx.p >= 0) {
+        // Matching ikey was found (--> full prefix matches)
+        // We might have to keep going down since we found the subtree we are interested in
         if (n_->keylenx_is_layer(keylenx)) {
+            // The ikey was found and it's value pointing to lower layer. keep the current node and the current layer root so we will be able to return back (used in some corner cases)
             node_stack_.push_back(root_);
             node_stack_.push_back(n_);
+
+            // Change our local search root to point to the lower layer
             root_ = entry.layer();
             return scan_down;
         } else if (n_->keylenx_has_ksuf(keylenx)) {
+            // Key in the tree has suffix (--> this is the only key in the tree with this prefix)
             int ksuf_compare = suffix.compare(ka.suffix());
+            // If ksuf_compare > 0 --> suffix > ka.suffix
+            found = (ksuf_compare == 0);
             if (helper.initial_ksuf_match(ksuf_compare, emit_equal)) {
+                /* ikey matches and the suffix comparison matches the helper rules:
+                     forward - our key is smaller than the tree's key (--> the current key in tree is the closest upper bounder for our key)
+                     reverse - our key is larger than the tree's key (--> the current key in tree is the closest lower bounder for our key)
+                   In case the suffixes match, if emit_equal is true, both helpers return true and vice versa */
+
+                // Copy the key that was found in the tree to our key, as we are going to return it to the iterator
+                // IDAN: OPTIMIZATION: found is true, our key suffix fully matches the tree's key suffix. we can optimize the code by not copying the data.
                 int keylen = ka.assign_store_suffix(suffix);
                 ka.assign_store_length(keylen);
                 return scan_emit;
             }
-        } else if (emit_equal)
+        } else if (emit_equal) {
+            // Tree's key has no suffix and does not point to a lower layer --> the tree's key fully matches our key
+            found = true;
             return scan_emit;
+        }
         // otherwise, this entry must be skipped
         ki_ = helper.next(ki_);
     }
     return scan_find_next;
-}
-
-// MOT: overload with 'found' output parameter
-template <typename P> template <typename H>
-int scanstackelt<P>::find_initial(H& helper, key_type& ka, bool emit_equal,
-                                  bool& found, leafvalue_type& entry, threadinfo& ti)
-{
-    int result = find_initial(helper, ka, emit_equal, entry, ti);
-    found = (result == scan_emit);
-    return result;
 }
 
 template <typename P> template <typename H>
@@ -276,36 +297,51 @@ int scanstackelt<P>::find_next(H &helper, key_type &ka, leafvalue_type &entry)
  retry_entry:
     kp = this->kp();
     if (kp >= 0) {
+        // After the call to find_initial, ki (index in leaf) points to ikey in the leaf that best match our request (tightest upper or lower boundary, depends on the helper type)
+        // As kp is valid, we should investigate the current ikey in leaf.
+        // If the ikey points to a lower layer, we need to traverse down with it. otherwise, this is our target key.
         ikey_type ikey = n_->ikey0_[kp];
         int keylenx = n_->keylenx_[kp];
         int keylen = keylenx;
         fence();
         entry = n_->lv_[kp];
         entry.prefetch(keylenx);
-        if (n_->keylenx_has_ksuf(keylenx))
+        if (n_->keylenx_has_ksuf(keylenx)) {
             keylen = ka.assign_store_suffix(n_->ksuf(kp));
+            masstree_invariant(keylen < (int)MASSTREE_MAXKEYLEN);
+        }
 
         if (n_->has_changed(v_))
             goto changed;
+            // Verify that the key that we found meets the criteria
         else if (helper.is_duplicate(ka, ikey, keylenx)) {
+            /* The current tree's key doesn't meet the criteria:
+                 forward - search key is larger or equal to the tree's key
+                 reverse - search key is smaller or equal to the tree's key (if upper_bound_ == true, is_duplicate always return false as any key that we find is our target key)
+                   * - equal is not good because if an equal key exists, it should have been already reported
+               usually happens when node was changed in previous iteration. */
             ki_ = helper.next(ki_);
             goto retry_entry;
         }
 
         // We know we can emit the data collected above.
+        // Updating the search key with the ikey from the tree's key. we might return our updated key now or continue search with it in lower layer
         ka.assign_store_ikey(ikey);
         helper.mark_key_complete();
         if (n_->keylenx_is_layer(keylenx)) {
+            // The tree's key is in lower layer. save the current layer root and current node (we might need to return back) and continue the search there
             node_stack_.push_back(root_);
             node_stack_.push_back(n_);
             root_ = entry.layer();
             return scan_down;
         } else {
+            // Key was found. update our search key length with the tree's key (suffix was already copied)
             ka.assign_store_length(keylen);
             return scan_emit;
         }
     }
 
+    // kp is not valid -> ki is no valid. the target key is not in the current node
     if (!n_->has_changed(v_)) {
         n_ = helper.advance(n_, ka);
         if (!n_) {
@@ -324,7 +360,8 @@ int scanstackelt<P>::find_next(H &helper, key_type &ka, leafvalue_type &entry)
 
 template <typename P> template <typename H, typename F>
 int basic_table<P>::scan(H helper,
-                         Str firstkey, bool emit_firstkey,
+                         void const *const &firstKey,
+                         unsigned int firstKeyLen, bool emit_firstkey,
                          F& scanner,
                          threadinfo& ti) const
 {
@@ -335,9 +372,9 @@ int basic_table<P>::scan(H helper,
         ikey_type x[(MASSTREE_MAXKEYLEN + sizeof(ikey_type) - 1)/sizeof(ikey_type)];
         char s[MASSTREE_MAXKEYLEN];
     } keybuf;
-    masstree_precondition(firstkey.len <= (int) sizeof(keybuf));
-    memcpy(keybuf.s, firstkey.s, firstkey.len);
-    key_type ka(keybuf.s, firstkey.len);
+    masstree_precondition(firstKeyLen <= (int) sizeof(keybuf));
+    memcpy(keybuf.s, firstKey, firstKeyLen);
+    key_type ka(keybuf.s, firstKeyLen);
 
     typedef scanstackelt<P> mystack_type;
     mystack_type stack;
@@ -346,10 +383,13 @@ int basic_table<P>::scan(H helper,
 
     int scancount = 0;
     int state;
+    bool foundGiven = false;
 
     while (1) {
-        state = stack.find_initial(helper, ka, emit_firstkey, entry, ti);
-        scanner.visit_leaf(stack, ka, ti);
+        state = stack.find_initial(helper, ka, emit_firstkey, foundGiven, entry, ti);
+        //If we want to signal that we have visited this leave, we can do it here
+        //like for example range locks
+//            scanner.visit_leaf(stack, ka, ti);
         if (state != mystack_type::scan_down)
             break;
         ka.shift();
@@ -359,8 +399,9 @@ int basic_table<P>::scan(H helper,
         switch (state) {
         case mystack_type::scan_emit:
             ++scancount;
-            if (!scanner.visit_value(ka, entry.value(), ti))
-                goto done;
+            // We can check if the value was already visited. currently commented out
+//            if (!scanner.visit_value(ka, entry.value(), ti))
+//                goto done;
             stack.ki_ = helper.next(stack.ki_);
             state = stack.find_next(helper, ka, entry);
             break;
@@ -368,12 +409,16 @@ int basic_table<P>::scan(H helper,
         case mystack_type::scan_find_next:
         find_next:
             state = stack.find_next(helper, ka, entry);
-            if (state != mystack_type::scan_up)
-                scanner.visit_leaf(stack, ka, ti);
+            if (state != mystack_type::scan_up) {
+                //If we want to signal that we have visited this leave, we can do it here
+                //like for example range locks
+//                scanner.visit_leaf(stack, ka, ti);
+            }
             break;
 
         case mystack_type::scan_up:
             do {
+                //the scan is finished when the stack is empty
                 if (stack.node_stack_.empty())
                     goto done;
                 stack.n_ = static_cast<leaf<P>*>(stack.node_stack_.back());

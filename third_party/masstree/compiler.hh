@@ -15,20 +15,22 @@
  */
 #ifndef MASSTREE_COMPILER_HH
 #define MASSTREE_COMPILER_HH 1
-#include "config.h"  // MOT: ensure CACHE_LINE_SIZE etc. available
+
+#include "masstree_config.h"
 #include <stdint.h>
-#define __STDC_FORMAT_MACROS
-#include <inttypes.h>
 #include <arpa/inet.h>
 #if HAVE_TYPE_TRAITS
 #include <type_traits>
 #endif
-#include <atomic>
 
 #define arraysize(a) (sizeof(a) / sizeof((a)[0]))
 
+#ifndef likely
 #define likely(x) __builtin_expect(!!(x), 1)
+#endif
+#ifndef unlikely
 #define unlikely(x) __builtin_expect(!!(x), 0)
+#endif
 
 #if HAVE_OFF_T_IS_LONG_LONG
 #define PRIdOFF_T "lld"
@@ -80,29 +82,49 @@ inline int ffs_msb(unsigned long long x) {
  * Prevents reordering of loads and stores by the compiler. Not intended to
  * synchronize the processor's caches. */
 inline void fence() {
+#if defined(__x86_64__) || defined(__x86__)
     asm volatile("" : : : "memory");
+#else
+    __sync_synchronize();
+#endif
 }
 
 /** @brief Acquire fence. */
 inline void acquire_fence() {
+#if defined(__x86_64__) || defined(__x86__)
     asm volatile("" : : : "memory");
+#else
+    __sync_synchronize();
+#endif
 }
 
 /** @brief Release fence. */
 inline void release_fence() {
+#if defined(__x86_64__) || defined(__x86__)
     asm volatile("" : : : "memory");
+#else
+    __sync_synchronize();
+#endif
 }
 
 /** @brief Compiler fence that relaxes the processor.
 
     Use this in spinloops, for example. */
 inline void relax_fence() {
+#if defined(__x86_64__) || defined(__x86__)
     asm volatile("pause" : : : "memory"); // equivalent to "rep; nop"
+#else
+    asm volatile("" : : : "memory"); // equivalent to "rep; nop"
+#endif
 }
 
 /** @brief Full memory fence. */
 inline void memory_fence() {
+#if defined(__x86_64__) || defined(__x86__)
     asm volatile("mfence" : : : "memory");
+#else
+    __sync_synchronize();
+#endif
 }
 
 /** @brief Do-nothing function object. */
@@ -151,13 +173,17 @@ template <int SIZE, typename BARRIER> struct sized_compiler_operations;
 template <typename B> struct sized_compiler_operations<1, B> {
     typedef char type;
     static inline type xchg(type* object, type new_value) {
+#if defined(__x86_64__) || defined(__x86__)
         asm volatile("xchgb %0,%1"
                      : "+q" (new_value), "+m" (*object));
         B()();
         return new_value;
+#else
+	return __sync_lock_test_and_set(object, new_value);
+#endif
     }
     static inline type val_cmpxchg(type* object, type expected, type desired) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
         asm volatile("lock; cmpxchgb %2,%1"
                      : "+a" (expected), "+m" (*object)
                      : "r" (desired) : "cc");
@@ -180,7 +206,7 @@ template <typename B> struct sized_compiler_operations<1, B> {
 #endif
     }
     static inline type fetch_and_add(type *object, type addend) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
         asm volatile("lock; xaddb %0,%1"
                      : "+q" (addend), "+m" (*object) : : "cc");
         B()();
@@ -190,7 +216,7 @@ template <typename B> struct sized_compiler_operations<1, B> {
 #endif
     }
     static inline void atomic_or(type* object, type addend) {
-#if __x86__
+#if defined(__x86_64__) || defined(__x86__)
         asm volatile("lock; orb %0,%1"
                      : "=r" (addend), "+m" (*object) : : "cc");
         B()();
@@ -207,13 +233,17 @@ template <typename B> struct sized_compiler_operations<2, B> {
     typedef int16_t type;
 #endif
     static inline type xchg(type* object, type new_value) {
+#if defined(__x86_64__) || defined(__x86__)
         asm volatile("xchgw %0,%1"
                      : "+r" (new_value), "+m" (*object));
         B()();
         return new_value;
+#else
+	return __sync_lock_test_and_set(object, new_value);
+#endif
     }
     static inline type val_cmpxchg(type* object, type expected, type desired) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
         asm volatile("lock; cmpxchgw %2,%1"
                      : "+a" (expected), "+m" (*object)
                      : "r" (desired) : "cc");
@@ -236,7 +266,7 @@ template <typename B> struct sized_compiler_operations<2, B> {
 #endif
     }
     static inline type fetch_and_add(type* object, type addend) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
         asm volatile("lock; xaddw %0,%1"
                      : "+r" (addend), "+m" (*object) : : "cc");
         B()();
@@ -246,7 +276,7 @@ template <typename B> struct sized_compiler_operations<2, B> {
 #endif
     }
     static inline void atomic_or(type* object, type addend) {
-#if __x86__
+#if (defined(__x86_64__) || defined(__x86__))
         asm volatile("lock; orw %0,%1"
                      : "=r" (addend), "+m" (*object) : : "cc");
         B()();
@@ -263,13 +293,17 @@ template <typename B> struct sized_compiler_operations<4, B> {
     typedef int32_t type;
 #endif
     static inline type xchg(type* object, type new_value) {
+#if (defined(__x86_64__) || defined(__x86__))
         asm volatile("xchgl %0,%1"
                      : "+r" (new_value), "+m" (*object));
         B()();
         return new_value;
+#else
+	return __sync_lock_test_and_set(object, new_value);
+#endif
     }
     static inline type val_cmpxchg(type* object, type expected, type desired) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP)
         asm volatile("lock; cmpxchgl %2,%1"
                      : "+a" (expected), "+m" (*object)
                      : "r" (desired) : "cc");
@@ -292,7 +326,7 @@ template <typename B> struct sized_compiler_operations<4, B> {
 #endif
     }
     static inline type fetch_and_add(type *object, type addend) {
-#if __x86__ && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
+#if (defined(__x86_64__) || defined(__x86__)) && (PREFER_X86 || !HAVE___SYNC_FETCH_AND_ADD)
         asm volatile("lock; xaddl %0,%1"
                      : "+r" (addend), "+m" (*object) : : "cc");
         B()();
@@ -302,7 +336,7 @@ template <typename B> struct sized_compiler_operations<4, B> {
 #endif
     }
     static inline void atomic_or(type* object, type addend) {
-#if __x86__
+#if (defined(__x86_64__) || defined(__x86__))
         asm volatile("lock; orl %0,%1"
                      : "=r" (addend), "+m" (*object) : : "cc");
         B()();
@@ -320,14 +354,16 @@ template <typename B> struct sized_compiler_operations<8, B> {
 #else
     typedef int64_t type;
 #endif
-#if __x86_64__
     static inline type xchg(type* object, type new_value) {
+#if (defined(__x86_64__) || defined(__x86__))
         asm volatile("xchgq %0,%1"
                      : "+r" (new_value), "+m" (*object));
         B()();
         return new_value;
-    }
+#else
+	return __sync_lock_test_and_set(object, new_value);
 #endif
+    }
     static inline type val_cmpxchg(type* object, type expected, type desired) {
 #if __x86_64__ && (PREFER_X86 || !HAVE___SYNC_VAL_COMPARE_AND_SWAP_8)
         asm volatile("lock; cmpxchgq %2,%1"
@@ -576,8 +612,12 @@ inline void prefetch(const void *ptr) {
 #ifdef NOPREFETCH
     (void) ptr;
 #else
+#if (defined(__x86_64__) || defined(__x86__))
     typedef struct { char x[CACHE_LINE_SIZE]; } cacheline_t;
     asm volatile("prefetcht0 %0" : : "m" (*(const cacheline_t *)ptr));
+#else
+    __builtin_prefetch(ptr);
+#endif
 #endif
 }
 #endif
@@ -586,8 +626,12 @@ inline void prefetchnta(const void *ptr) {
 #ifdef NOPREFETCH
     (void) ptr;
 #else
+#if (defined(__x86_64__) || defined(__x86__))
     typedef struct { char x[CACHE_LINE_SIZE]; } cacheline_t;
     asm volatile("prefetchnta %0" : : "m" (*(const cacheline_t *)ptr));
+#else
+    __builtin_prefetch(ptr,0,0);
+#endif
 #endif
 }
 
@@ -620,9 +664,11 @@ inline uint64_t ntohq(uint64_t val) {
     asm("bswapl %0; bswapl %1; xchgl %0,%1"
         : "+r" (v.s.a), "+r" (v.s.b));
     return v.u;
-#else /* __i386__ */
+#elif __x86_64__
     asm("bswapq %0" : "+r" (val));
     return val;
+#else
+    return __builtin_bswap64(val);
 #endif
 }
 
@@ -968,20 +1014,6 @@ inline T read_in_net_order(const uint8_t* s) {
     return read_in_net_order<T>(reinterpret_cast<const char*>(s));
 }
 
-
-inline uint64_t read_pmc(uint32_t ecx) {
-    uint32_t a, d;
-    __asm __volatile("rdpmc" : "=a"(a), "=d"(d) : "c"(ecx));
-    return ((uint64_t)a) | (((uint64_t)d) << 32);
-}
-
-inline uint64_t read_tsc(void)
-{
-    uint32_t low, high;
-    asm volatile("rdtsc" : "=a" (low), "=d" (high));
-    return ((uint64_t)low) | (((uint64_t)high) << 32);
-}
-
 template <typename T>
 inline int compare(T a, T b) {
     if (a == b)
@@ -997,24 +1029,6 @@ namespace mass {
 template <typename T> struct type_synonym {
     typedef T type;
 };
-
-
-#if HAVE_CXX_TEMPLATE_ALIAS && HAVE_TYPE_TRAITS
-template <typename T, T V>
-using integral_constant = std::integral_constant<T, V>;
-typedef std::true_type true_type;
-typedef std::false_type false_type;
-#else
-template <typename T, T V>
-struct integral_constant {
-    typedef integral_constant<T, V> type;
-    typedef T value_type;
-    static constexpr T value = V;
-};
-template <typename T, T V> constexpr T integral_constant<T, V>::value;
-typedef integral_constant<bool, true> true_type;
-typedef integral_constant<bool, false> false_type;
-#endif
 
 #if HAVE_CXX_TEMPLATE_ALIAS && HAVE_TYPE_TRAITS
 template <bool B, typename T, typename F>
@@ -1160,61 +1174,6 @@ template <typename T> constexpr bool fast_argument<T, false>::is_reference;
 
 }
 
-
-template <typename T>
-struct has_fast_int_multiply : public mass::false_type {
-    // enum { check_t_integral = mass::integer_traits<T>::is_signed };
-};
-
-#if defined(__i386__) || defined(__x86_64__)
-inline void int_multiply(unsigned a, unsigned b, unsigned &xlow, unsigned &xhigh)
-{
-    __asm__("mul %2" : "=a" (xlow), "=d" (xhigh) : "r" (a), "a" (b) : "cc");
-}
-template <> struct has_fast_int_multiply<unsigned> : public mass::true_type {};
-
-# if SIZEOF_LONG == 4 || (defined(__x86_64__) && SIZEOF_LONG == 8)
-inline void int_multiply(unsigned long a, unsigned long b, unsigned long &xlow, unsigned long &xhigh)
-{
-    __asm__("mul %2" : "=a" (xlow), "=d" (xhigh) : "r" (a), "a" (b) : "cc");
-}
-template <> struct has_fast_int_multiply<unsigned long> : public mass::true_type {};
-# endif
-
-# if defined(__x86_64__) && SIZEOF_LONG_LONG == 8
-inline void int_multiply(unsigned long long a, unsigned long long b, unsigned long long &xlow, unsigned long long &xhigh)
-{
-    __asm__("mul %2" : "=a" (xlow), "=d" (xhigh) : "r" (a), "a" (b) : "cc");
-}
-template <> struct has_fast_int_multiply<unsigned long long> : public mass::true_type {};
-# endif
-#endif
-
 struct uninitialized_type {};
-
-
-template <typename T>
-struct relaxed_atomic {
-public:
-    relaxed_atomic() : _v() {
-    }
-    relaxed_atomic(T v) : _v(v) {
-    }
-
-    T load() const {
-        return _v.load(std::memory_order_relaxed);
-    }
-    relaxed_atomic<T>& store(T v) {
-        _v.store(v, std::memory_order_relaxed);
-        return *this;
-    }
-
-    relaxed_atomic(const relaxed_atomic<T>&) = delete;
-    relaxed_atomic(relaxed_atomic<T>&&) = delete;
-    relaxed_atomic<T>& operator=(const relaxed_atomic<T>&) = delete;
-    relaxed_atomic<T>& operator=(relaxed_atomic<T>&&) = delete;
-private:
-    std::atomic<T> _v;
-};
 
 #endif

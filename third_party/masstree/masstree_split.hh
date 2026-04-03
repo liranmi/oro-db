@@ -46,7 +46,7 @@ leaf<P>::ikey_after_insert(const permuter_type& perm, int i,
 
     The split type is 0 if @a ka went into *this, 1 if the @a ka went into
     *@a nr, and 2 for the sequential-order optimization (@a ka went into *@a
-    nr and no other keys were moved). */
+    nr and no other keys were moved). if -1, split failed due to memory issue */
 template <typename P>
 int leaf<P>::split_into(leaf<P>* nr, tcursor<P>* cursor,
                         ikey_type& split_ikey, threadinfo& ti)
@@ -71,7 +71,8 @@ int leaf<P>::split_into(leaf<P>* nr, tcursor<P>* cursor,
     int p = cursor->kx_.i;
     if (p == 0 && !this->prev_) {
         // reverse-sequential optimization
-        mid = 1;
+        // We remove this optimization as it can lead us to empty leaf (In case insertion fails)
+        // mid = 1;
     } else if (p == width && !this->next_.ptr) {
         // sequential optimization
         mid = width;
@@ -100,9 +101,16 @@ int leaf<P>::split_into(leaf<P>* nr, tcursor<P>* cursor,
     typename permuter_type::value_type pv = perml.value_from(mid - (p < mid));
     for (int x = mid; x <= width; ++x) {
         if (x == p) {
-            nr->assign_initialize(x - mid, cursor->ka_, ti);
+            if (!nr->assign_initialize(x - mid, cursor->ka_, ti)) {
+                ti.set_last_error(MT_MERR_SPLIT_INTO_ASSIGN_INITALIZE_1);
+                return -1;
+            }
+
         } else {
-            nr->assign_initialize(x - mid, this, pv & 15, ti);
+            if (!nr->assign_initialize(x - mid, this, pv & 15, ti)) {
+                ti.set_last_error(MT_MERR_SPLIT_INTO_ASSIGN_INITALIZE_2);
+                return -1;
+            }
             pv >>= 4;
         }
     }
@@ -174,6 +182,14 @@ int internode<P>::split_into(internode<P>* nr, int p, ikey_type ka,
     }
 }
 
+template <typename P>
+void tcursor<P>::release_internodes(internode_type * internodes_array[], int start, int end, threadinfo& ti) {
+        for (int i = start; i < end; i++) {
+            masstree_invariant(internodes_array[i]);
+            ti.deallocate(internodes_array[i], sizeof(*internodes_array[i]) /* Being ignored */, memtag_masstree_internode);
+            internodes_array[i] = nullptr;
+        }
+}
 
 template <typename P>
 bool tcursor<P>::make_split(threadinfo& ti)
@@ -189,16 +205,52 @@ bool tcursor<P>::make_split(threadinfo& ti)
         if (kx_.p != 0) {
             n_->permutation_ = perm.value();
             fence();
-            n_->assign(kx_.p, ka_, ti);
+            if (n_->assign(kx_.p, ka_, ti)) {
+                return true;
+            }
+            ti.set_last_error(MT_MERR_MAKE_SPLIT_PERM_EXCHANGE);
+            return false;
+        }
+    }
+
+    bool rc = true;
+
+    int reserved_nodes = 2;
+    internode_type * preallocated_internodes[reserved_nodes + 1] = { 0 };
+    int cur_cache_index = 0;
+
+    for (int i = 0; i < reserved_nodes; i++) {
+        preallocated_internodes[i] = (internode_type *)ti.pool_allocate(MAX_MEMTAG_MASSTREE_INTERNODE_ALLOCATION_SIZE,
+                                                                memtag_masstree_internode);
+        if (!preallocated_internodes[i]) {
+            release_internodes(preallocated_internodes, 0, i, ti);
+            ti.set_last_error(MT_MERR_MAKE_SPLIT_PRE_ALLOC);
             return false;
         }
     }
 
     node_type* child = leaf_type::make(n_->ksuf_used_capacity(), n_->phantom_epoch(), ti);
+    if (!child) {
+        release_internodes(preallocated_internodes, 0, reserved_nodes, ti);
+        ti.set_last_error(MT_MERR_MAKE_SPLIT_LEAF_ALLOC);
+        return false;
+    }
     child->assign_version(*n_);
+    child->mark_nonroot();
+    // As n_ is locked, child is locked as well.
     ikey_type xikey[2];
+    // Add the new key and spread the keys between the 2 leafs. The new key might be inserted to either one of the leafs. Link to parent will be done later.
     int split_type = n_->split_into(static_cast<leaf_type*>(child),
                                     this, xikey[0], ti);
+
+    if (split_type < 0) {
+        // Split failed due to ksuffix memory allocation error (child is not connected to n_ at this stage)
+        release_internodes(preallocated_internodes, 0, reserved_nodes, ti);
+        // child is not visiable yet, so we can deallocate without rcu
+        ((leaf_type *)child)->deallocate(ti);
+        child = nullptr;
+        return false;
+    }
     unsigned sense = 0;
     node_type* n = n_;
     uint32_t height = 0;
@@ -206,8 +258,12 @@ bool tcursor<P>::make_split(threadinfo& ti)
     while (true) {
         masstree_invariant(!n->concurrent || (n->locked() && child->locked() && (n->isleaf() || n->splitting())));
         internode_type *next_child = 0;
-
         internode_type *p = n->locked_parent(ti);
+
+        if (cur_cache_index == reserved_nodes) {
+            // Should never happen with pre-allocated internodes (we should have enough reserved nodes). bad flow is not handled
+            ti.set_last_error(MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_EMPTY_PRE_ALLOC_NOT_EXPECTED);
+        }
 
         int kp = -1;
         if (n->parent_exists(p)) {
@@ -215,8 +271,22 @@ bool tcursor<P>::make_split(threadinfo& ti)
             p->mark_insert();
         }
 
-        if (kp < 0 || p->height_ > height + 1) {
-            internode_type *nn = internode_type::make(height + 1, ti);
+        // If cur_cache_index == 1, reserved internode was used on last loop due to memory allocation failure.
+        // In this case, we have only 1 reserved internode left, so stop climbing and add the new internode in the current layer
+        if (kp < 0 || p->height_ > height + 1 || cur_cache_index == 1) {
+            masstree_invariant(preallocated_internodes[cur_cache_index]);
+            internode_type *nn = internode_type::make(height + 1, ti, nullptr);
+            if (!nn) {
+                ti.set_last_error(MT_MERR_MAKE_INTERNODE_USE_RESERVED);
+                nn = internode_type::make(height + 1, ti, preallocated_internodes[cur_cache_index++]);
+            }
+
+            if (!nn) {
+                // Should never happen with pre-allocated internodes. bad flow is not handled
+                ti.set_last_error(MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_NOT_EXPECTED);
+                masstree_invariant(false);
+            }
+
             nn->child_[0] = n;
             nn->assign(0, xikey[sense], child);
             nn->nkeys_ = 1;
@@ -230,11 +300,23 @@ bool tcursor<P>::make_split(threadinfo& ti)
             n->set_parent(nn);
         } else {
             if (p->size() >= p->width) {
-                next_child = internode_type::make(height + 1, ti);
+                masstree_invariant(preallocated_internodes[cur_cache_index]);
+                next_child = internode_type::make(height + 1, ti, nullptr);
+                if (!next_child) {
+                    ti.set_last_error(MT_MERR_MAKE_INTERNODE_USE_RESERVED_2);
+                    next_child = internode_type::make(height + 1, ti, preallocated_internodes[cur_cache_index++]);
+                }
+
+                if (!next_child) {
+                    // Should never happen with pre-allocated internodes. bad flow is not handled
+                    ti.set_last_error(MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_NOT_EXPECTED_2);
+                    masstree_invariant(false);
+                }
+
                 next_child->assign_version(*p);
                 next_child->mark_nonroot();
                 kp = p->split_into(next_child, kp, xikey[sense],
-                                   child, xikey[sense ^ 1], split_type);
+                                   child, xikey[sense ^ 1], split_type); // No memory allocation
             }
             if (kp >= 0) {
                 p->shift_up(kp + 1, kp, p->size() - kp);
@@ -256,16 +338,27 @@ bool tcursor<P>::make_split(threadinfo& ti)
             int width = perml.size();
             perml.set_size(width - nr->size());
             // removed item, if any, must be @ perml.size()
+            int perm_size = perml.size();
+            masstree_invariant(perm_size > 0); // Verify that the leaf is not empty
             if (width != nl->width) {
-                perml.exchange(perml.size(), nl->width - 1);
+                perml.exchange(perm_size, nl->width - 1);
             }
             nl->mark_split();
             nl->permutation_ = perml.value();
             // account for split
             if (split_type == 0) {
                 kx_.p = perml.back();
-                nl->assign(kx_.p, ka_, ti);
+
+                // In case the new inserted key should be placed in the origianl leaf (left leaf), memory allocation might be needed for it's ksuffix.
+                //  If assign fails (--> memory allocation failure), the flow will continue, but we mark rc as false to indicate that the insertion failed.
+                //  In this case, the key wont be exposed in finish_insert(), but the leaf split will be completed successfully.
+                if (!nl->assign(kx_.p, ka_, ti)) {
+                  ti.set_last_error(MT_MERR_MAKE_SPLIT_ASSIGN_SUFFIX);
+                  rc = false;
+                }
+#ifndef MASSTREE_OBSOLETE_CODE
                 new_nodes_.emplace_back(nr, nr->full_unlocked_version_value());
+#endif
             } else {
                 kx_.i = kx_.p = kx_.i - perml.size();
                 n_ = nr;
@@ -293,7 +386,10 @@ bool tcursor<P>::make_split(threadinfo& ti)
         }
     }
 
-    return false;
+    // Free unused pre-allocated internodes
+    release_internodes(preallocated_internodes, cur_cache_index, reserved_nodes, ti);
+
+    return rc;
 }
 
 } // namespace Masstree

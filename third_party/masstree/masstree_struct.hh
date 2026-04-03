@@ -106,9 +106,12 @@ class internode : public node_base<P> {
     typedef typename key_bound<width, P::bound_method>::type bound_type;
     typedef typename P::threadinfo_type threadinfo;
 
+    // Number of boundary keys the node currently contains
     uint8_t nkeys_;
     uint32_t height_;
+    // Boundary keys array
     ikey_type ikey0_[width];
+    // Child nodes array (might be leafs or internodes)
     node_base<P>* child_[width + 1];
     node_base<P>* parent_;
     kvtimestamp_t created_at_[P::debug_level > 0];
@@ -117,9 +120,15 @@ class internode : public node_base<P> {
         : node_base<P>(false), nkeys_(0), height_(height), parent_() {
     }
 
-    static internode<P>* make(uint32_t height, threadinfo& ti) {
-        void* ptr = ti.pool_allocate(sizeof(internode<P>),
+    static internode<P>* make(uint32_t height, threadinfo& ti, void * allocated_internode = nullptr) {
+        void* ptr = allocated_internode ?
+                    allocated_internode :
+                    ti.pool_allocate(MAX_MEMTAG_MASSTREE_INTERNODE_ALLOCATION_SIZE,
                                      memtag_masstree_internode);
+        if (!ptr) {
+            ti.set_last_error(MT_MERR_MAKE_INTERNODE);
+            return nullptr;
+        }
         internode<P>* n = new(ptr) internode<P>(height);
         assert(n);
         if (P::debug_level > 0)
@@ -264,19 +273,38 @@ class leaf : public node_base<P> {
     enum {
         modstate_insert = 0, modstate_remove = 1, modstate_deleted_layer = 2
     };
-
+    /* Indicator for internal suffix (iksuf_) string bag
+       extrasize64_ == 0 --> no iksuf_.
+       extrasize64_ > 0 --> iksuf_ (of size extrasize64_ * 64) exists and is in use
+       extrasize64_ < 0 --> iksuf_ (of size (-extrasize64_ - 1) * 64) exists but not in use anymore (ksuf_ is used instead)
+    */
     int8_t extrasize64_;
     uint8_t modstate_;
+    /* Key slice (ikey) length array. locations consistent with keys in ikey0_ and lv_ arrays.
+        If key ends in this leaf and has no suffix:            length of the key slice is stored
+        If key ends in this leaf and has suffix:               ksuf_keylenx (64) is stored
+        If key doesn't end in this leaf (ends in lower layer): layer_keylenx (128) is stored */
     uint8_t keylenx_[width];
+    /* Sorted permutation of the ikey's indexes (up to the permutation size). divided into 16 parts of 2 bytes each.
+         First part: the current size of the permutation (number of ikeys in use)
+         Following parts: sorted indexes of the ikeys in ikey0_ array.
+       The permutation always include all values (0-14) but only the first perm.size (which is located in the first part) entries are valid and sorted. */
     typename permuter_type::storage_type permutation_;
+    // Key slices (ikey) array. each slice is uint64 and represent 8 bytes of the original key
     ikey_type ikey0_[width];
+    // Values array. locations are consistent with keys in ikey0_ and keylenx_ arrays. holds key's value or a link to lower layer
     leafvalue_type lv_[width];
+    // Suffixes of keys. Will be used if a key has further suffix but it's prefix is unique.
     external_ksuf_type* ksuf_;
+    // Pointer to the next leaf in the same layer
     union {
         leaf<P>* ptr;
         uintptr_t x;
     } next_;
+    // Pointer to the previous leaf in the same layer
     leaf<P>* prev_;
+
+    // Leaf's parent (might be null if leaf is the root of the btree (trie node)
     node_base<P>* parent_;
     phantom_epoch_type phantom_epoch_[P::need_phantom_epoch];
     kvtimestamp_t created_at_[P::debug_level > 0];
@@ -297,8 +325,12 @@ class leaf : public node_base<P> {
     }
 
     static leaf<P>* make(int ksufsize, phantom_epoch_type phantom_epoch, threadinfo& ti) {
-        size_t sz = iceil(sizeof(leaf<P>) + std::min(ksufsize, 128), 64);
+        size_t sz = MAX_MEMTAG_MASSTREE_LEAF_ALLOCATION_SIZE; // iceil(sizeof(leaf<P>) + std::min(ksufsize, 128), 64);
         void* ptr = ti.pool_allocate(sz, memtag_masstree_leaf);
+        if (!ptr) {
+            ti.set_last_error(MT_MERR_MAKE_LEAF);
+            return nullptr;
+        }
         leaf<P>* n = new(ptr) leaf<P>(sz, phantom_epoch);
         assert(n);
         if (P::debug_level > 0) {
@@ -308,6 +340,10 @@ class leaf : public node_base<P> {
     }
     static leaf<P>* make_root(int ksufsize, leaf<P>* parent, threadinfo& ti) {
         leaf<P>* n = make(ksufsize, parent ? parent->phantom_epoch() : phantom_epoch_type(), ti);
+        if (!n) {
+            ti.set_last_error(MT_MERR_MAKE_ROOT_LEAF);
+            return nullptr;
+        }
         n->next_.ptr = n->prev_ = 0;
         n->ikey0_[0] = 0; // to avoid undefined behavior
         n->make_layer_root();
@@ -391,7 +427,9 @@ class leaf : public node_base<P> {
     }
     Str ksuf(int p, int keylenx) const {
         (void) keylenx;
-        masstree_precondition(keylenx_has_ksuf(keylenx));
+        // keylenx might not be equal to ksuf_keylenx as this operation might be called without holding leaf's lock
+        // We allow it, and expect the caller to validate leaf's version and retry.
+        //masstree_precondition(keylenx_has_ksuf(keylenx));
         return ksuf_ ? ksuf_->get(p) : iksuf_[0].get(p);
     }
     Str ksuf(int p) const {
@@ -407,13 +445,17 @@ class leaf : public node_base<P> {
         return s.len == ka.suffix().len
             && string_slice<uintptr_t>::equals_sloppy(s.s, ka.suffix().s, s.len);
     }
-    // Returns 1 if match & not layer, 0 if no match, <0 if match and layer
+    // Returns 1 if match & not layer, 0 if no match, < 0 if match and layer
     int ksuf_matches(int p, const key_type& ka) const {
         int keylenx = keylenx_[p];
         if (keylenx < ksuf_keylenx)
+            // Key does not have extra suffix
             return 1;
         if (keylenx == layer_keylenx)
+            // Key does not end in this layer. we need to continue looking for it in lower layers.
             return -(int) sizeof(ikey_type);
+
+        // Key is stored in this layer and has suffix. lets compare the suffixes.
         Str s = ksuf(p, keylenx);
         return s.len == ka.suffix().len
             && string_slice<uintptr_t>::equals_sloppy(s.s, ka.suffix().s, s.len);
@@ -494,40 +536,55 @@ class leaf : public node_base<P> {
         modstate_ = modstate_deleted_layer;
     }
 
-    inline void assign(int p, const key_type& ka, threadinfo& ti) {
+    inline bool assign(int p, const key_type& ka, threadinfo& ti) {
         lv_[p] = leafvalue_type::make_empty();
         ikey0_[p] = ka.ikey();
         if (!ka.has_suffix()) {
             keylenx_[p] = ka.length();
         } else {
             keylenx_[p] = ksuf_keylenx;
-            assign_ksuf(p, ka.suffix(), false, ti);
+            if (!assign_ksuf(p, ka.suffix(), false, ti)) {
+                ti.set_last_error(MT_MERR_LEAF_ASSIGN);
+                return false;
+            }
         }
+
+        return true;
     }
-    inline void assign_initialize(int p, const key_type& ka, threadinfo& ti) {
+    inline bool assign_initialize(int p, const key_type& ka, threadinfo& ti) {
         lv_[p] = leafvalue_type::make_empty();
         ikey0_[p] = ka.ikey();
         if (!ka.has_suffix()) {
             keylenx_[p] = ka.length();
         } else {
             keylenx_[p] = ksuf_keylenx;
-            assign_ksuf(p, ka.suffix(), true, ti);
+            if (!assign_ksuf(p, ka.suffix(), true, ti)) {
+                ti.set_last_error(MT_MERR_ASSIGN_INITALIZE_1);
+                return false;
+            }
         }
+
+        return true;
     }
-    inline void assign_initialize(int p, leaf<P>* x, int xp, threadinfo& ti) {
+    inline bool assign_initialize(int p, leaf<P>* x, int xp, threadinfo& ti) {
         lv_[p] = x->lv_[xp];
         ikey0_[p] = x->ikey0_[xp];
         keylenx_[p] = x->keylenx_[xp];
         if (x->has_ksuf(xp)) {
-            assign_ksuf(p, x->ksuf(xp), true, ti);
+            if (!assign_ksuf(p, x->ksuf(xp), true, ti)) {
+                ti.set_last_error(MT_MERR_ASSIGN_INITALIZE_2);
+                return false;
+            }
         }
+
+        return true;
     }
     inline void assign_initialize_for_layer(int p, const key_type& ka) {
         assert(ka.has_suffix());
         ikey0_[p] = ka.ikey();
         keylenx_[p] = layer_keylenx;
     }
-    void assign_ksuf(int p, Str s, bool initializing, threadinfo& ti);
+    bool assign_ksuf(int p, Str s, bool initializing, threadinfo& ti);
 
     inline ikey_type ikey_after_insert(const permuter_type& perm, int i,
                                        const tcursor<P>* cursor) const;
@@ -606,6 +663,7 @@ leaf<P>::stable_last_key_compare(const key_type& k, nodeversion_type v,
     while (true) {
         typename leaf<P>::permuter_type perm(permutation_);
         int n = perm.size();
+        // Eddie's comment
         // If `n == 0`, then this node is empty: it was deleted without ever
         // splitting, or it split and then was emptied.
         // - It is always safe to return 1, because then the caller will
@@ -616,6 +674,11 @@ leaf<P>::stable_last_key_compare(const key_type& k, nodeversion_type v,
         //   `perm[0]`. If the node ever had keys in it, then kpermuter ensures
         //   that slot holds the most recently deleted key, which would belong
         //   in this leaf. Otherwise, `perm[0]` is 0.
+
+        // Idan's comment
+        // In case the leaf has no keys, perm[-1] will return 0.
+        // This wont work for the most left leaf, as we cannot assume anything about it's ikey.
+        // So we will use the value that was last deleted as an upper boundary (perm[0])
         int p = perm[n ? n - 1 : 0];
         int cmp = compare_key(k, p);
         if (likely(!this->has_changed(v))) {
@@ -644,6 +707,7 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
  retry:
     sense = 0;
     n[sense] = this;
+    // Looking for a local root node up the tree and populate n[0] and v[0] with the founded node\node's version respectively
     while (true) {
         v[sense] = n[sense]->stable_annotated(ti.stable_fence());
         if (v[sense].is_root()) {
@@ -653,10 +717,12 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
         n[sense] = n[sense]->maybe_parent();
     }
 
-    // Loop over internal nodes.
+    // Traverse over internal nodes until reaching a leaf.
     while (!v[sense].isleaf()) {
         const internode<P> *in = static_cast<const internode<P>*>(n[sense]);
         in->prefetch();
+        // Get the child's node location (inside in->child_) which best match the key in ka
+        // This is done by comparing each one of the boundaries (starting from the lower one) until key in ka is lower than the boundary (linear search)
         int kp = internode<P>::bound_type::upper(ka, *in);
         n[sense ^ 1] = in->child_[kp];
         if (!n[sense ^ 1]) {
@@ -669,8 +735,11 @@ inline leaf<P>* node_base<P>::reach_leaf(const key_type& ka,
             continue;
         }
 
+        // Node's version was changed. wait until it is stable again (aka not dirty)
         typename node_base<P>::nodeversion_type oldv = v[sense];
         v[sense] = in->stable_annotated(ti.stable_fence());
+
+        // Handle the case the node has split (start again from the local root)
         if (unlikely(oldv.has_split(v[sense]))
             && in->stable_last_key_compare(ka, v[sense], ti) > 0) {
             ti.mark(tc_root_retry);
@@ -725,11 +794,15 @@ leaf<P>* leaf<P>::advance_to_key(const key_type& ka, nodeversion_type& v,
     positions [0,p) are ready: keysuffixes in that range are copied. In either
     case, the key at position p is NOT copied; it is assigned to @a s. */
 template <typename P>
-void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
+bool leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     if ((ksuf_ && ksuf_->assign(p, s))
         || (extrasize64_ > 0 && iksuf_[0].assign(p, s)))
-        return;
-
+    {
+#if !(defined(__x86_64__) || defined(__x86__))        
+	fence();
+#endif
+        return true;
+    }
     external_ksuf_type* oksuf = ksuf_;
 
     permuter_type perm(permutation_);
@@ -742,20 +815,31 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
             csz += ksuf(mp).len;
     }
 
-    size_t sz = iceil_log2(external_ksuf_type::safe_size(width, csz + s.len));
+    size_t sz;
+    if (likely(!ti.use_pool())) {
+    // We don't use the iceil_log2 because our slab allocator will allocate a buffer in iceil_log2 - 1 size for us.
+      sz = external_ksuf_type::safe_size(width, csz + s.len);
+    } else {
+      sz = iceil_log2(external_ksuf_type::safe_size(width, csz + s.len));
+    }
+
     if (oksuf)
         sz = std::max(sz, oksuf->capacity());
 
-    void* ptr = ti.allocate(sz, memtag_masstree_ksuffixes);
+    void* ptr = ti.allocate(sz, memtag_masstree_ksuffixes, &sz);
+    if (!ptr) {
+        ti.set_last_error(MT_MERR_ASSIGN_KSUF);
+        return false;
+    }
     external_ksuf_type* nksuf = new(ptr) external_ksuf_type(width, sz);
     for (int i = 0; i < n; ++i) {
         int mp = initializing ? i : perm[i];
         if (mp != p && has_ksuf(mp)) {
-            bool ok = nksuf->assign(mp, ksuf(mp));
+            bool ok = nksuf->assign(mp, ksuf(mp)); // No memory allocation here
             assert(ok); (void) ok;
         }
     }
-    bool ok = nksuf->assign(p, s);
+    bool ok = nksuf->assign(p, s); // No memory allocation here
     assert(ok); (void) ok;
     fence();
 
@@ -775,11 +859,12 @@ void leaf<P>::assign_ksuf(int p, Str s, bool initializing, threadinfo& ti) {
     if (oksuf)
         ti.deallocate_rcu(oksuf, oksuf->capacity(),
                           memtag_masstree_ksuffixes);
+    return true;
 }
 
 template <typename P>
 inline basic_table<P>::basic_table()
-    : root_(0) {
+    : root_(nullptr) {
 }
 
 template <typename P>

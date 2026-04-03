@@ -18,6 +18,7 @@
 #include "string_base.hh"
 #include <stdarg.h>
 #include <stdio.h>
+
 namespace lcdf {
 
 struct Str : public String_base<Str> {
@@ -129,8 +130,7 @@ struct Str : public String_base<Str> {
             x = (x * 10) + s[p] - '0';
         return p == len && p != 0 ? x : -1;
     }
-
-    static Str snprintf(char *buf, size_t size, const char *fmt, ...) {
+    static Str snprintf(char *buf, size_t size, const char *fmt, ...) LCDF_SNPRINTF_ATTR {
         va_list val;
         va_start(val, fmt);
         int n = vsnprintf(buf, size, fmt, val);

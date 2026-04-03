@@ -135,16 +135,44 @@ if(ORO_WITH_NUMA)
 endif()
 
 # =============================================================================
-# Benchmark executable
+# Micro-benchmark executable (original)
 # =============================================================================
 if(ORO_BUILD_BENCH)
-    add_executable(oro_bench
+    add_executable(oro_micro_bench
         ${CMAKE_SOURCE_DIR}/bench/oro_bench.cpp
+    )
+    target_link_libraries(oro_micro_bench PRIVATE oro)
+    target_include_directories(oro_micro_bench PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${MOT_INCLUDE_DIRS}
+    )
+
+    # =========================================================================
+    # TPC-C / YCSB benchmark executable
+    # =========================================================================
+    set(BENCH_INCLUDE_DIRS
+        ${CMAKE_SOURCE_DIR}/bench/framework
+        ${CMAKE_SOURCE_DIR}/bench/tpcc
+        ${CMAKE_SOURCE_DIR}/bench/ycsb
+    )
+
+    add_executable(oro_bench
+        ${CMAKE_SOURCE_DIR}/bench/main.cpp
+        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_workload.cpp
+        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_txn.cpp
+        ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_workload.cpp
+        ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_txn.cpp
     )
     target_link_libraries(oro_bench PRIVATE oro)
     target_include_directories(oro_bench PRIVATE
         ${CMAKE_SOURCE_DIR}/src/stubs
         ${MOT_INCLUDE_DIRS}
+        ${BENCH_INCLUDE_DIRS}
+    )
+    target_compile_options(oro_bench PRIVATE
+        -Wno-unused-variable
+        -Wno-unused-parameter
+        -fpermissive
     )
 endif()
 
