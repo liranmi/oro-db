@@ -382,6 +382,7 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
         found->GetValue(6, read_tax);  // TAX = col 6
         fprintf(stderr, "VERIFY WH(%lu): OK  id=%lu ytd=%.2f tax=%.4f\n",
                 (unsigned long)w_id, (unsigned long)read_id, read_ytd, read_tax);
+        found->Print();
     } else {
         fprintf(stderr, "VERIFY WH(%lu): FAIL lookup=NULL rc=%d\n",
                 (unsigned long)w_id, (int)vrc);
