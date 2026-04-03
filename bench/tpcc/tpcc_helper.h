@@ -105,10 +105,9 @@ inline uint64_t NextHistoryKey() {
 // We fill it directly without creating a temp row.
 // Caller must destroy the returned key via ix->DestroyKey().
 // ======================================================================
-inline MOT::Key* BuildSearchKey(MOT::Index* ix, MOT::Table* table, uint64_t packed_key)
+inline MOT::Key* BuildSearchKey(MOT::TxnManager* txn, MOT::Index* ix, uint64_t packed_key)
 {
-    (void)table;
-    MOT::Key* key = ix->CreateNewKey();
+    MOT::Key* key = txn->GetTxnKey(ix);
     if (!key) return nullptr;
     key->FillValue(reinterpret_cast<const uint8_t*>(&packed_key), sizeof(uint64_t), 0);
     return key;
