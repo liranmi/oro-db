@@ -257,13 +257,7 @@ int main(int argc, char* argv[])
             MOT::MOTEngine::DestroyInstance();
             return 1;
         }
-        MOT::RC rc = ddl_txn->Commit();
-        if (rc != MOT::RC_OK) {
-            fprintf(stderr, "FATAL: Schema commit failed: rc=%u\n", (unsigned)rc);
-            engine->GetSessionManager()->DestroySessionContext(ddl_session);
-            MOT::MOTEngine::DestroyInstance();
-            return 1;
-        }
+        ddl_txn->LiteCommit();
         printf("    TPC-C schema created.\n");
 
         printf("[3] Populating TPC-C data (%u warehouses)...\n", cfg.tpcc_warehouses);
@@ -282,13 +276,7 @@ int main(int argc, char* argv[])
             MOT::MOTEngine::DestroyInstance();
             return 1;
         }
-        MOT::RC rc = ddl_txn->Commit();
-        if (rc != MOT::RC_OK) {
-            fprintf(stderr, "FATAL: Schema commit failed: rc=%u\n", (unsigned)rc);
-            engine->GetSessionManager()->DestroySessionContext(ddl_session);
-            MOT::MOTEngine::DestroyInstance();
-            return 1;
-        }
+        ddl_txn->LiteCommit();
         printf("    YCSB schema created.\n");
 
         printf("[3] Populating YCSB data (%lu records)...\n", (unsigned long)cfg.ycsb_record_count);
