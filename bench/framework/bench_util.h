@@ -28,12 +28,18 @@ inline uint64_t DecodeU64BE(const uint8_t* src)
            ((uint64_t)src[6] << 8)  | ((uint64_t)src[7]);
 }
 
-// Fill a Key object with a single uint64 at a given offset (big-endian)
+// MOT ColumnLONG key size: 1 sign-prefix byte + 8 big-endian data bytes = 9
+static constexpr uint16_t MOT_LONG_KEY_SIZE = 9;
+
+// Fill a Key object with a single uint64 at a given offset.
+// Matches MOT ColumnLONG::PackKey: 1-byte sign prefix (0x01 non-negative, 0x00 negative)
+// followed by 8-byte big-endian value. Total 9 bytes per field.
 inline void KeyFillU64(MOT::Key* key, uint16_t offset, uint64_t val)
 {
-    uint8_t buf[8];
-    EncodeU64BE(buf, val);
-    key->FillValue(buf, 8, offset);
+    uint8_t buf[9];
+    buf[0] = (val & 0x8000000000000000ULL) ? 0x00 : 0x01;
+    EncodeU64BE(buf + 1, val);
+    key->FillValue(buf, 9, offset);
 }
 
 // Thread-local fast RNG

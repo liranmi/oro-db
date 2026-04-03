@@ -94,7 +94,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable warehouse: %s\n", RcToString(rc)); return false; }
     t.ix_warehouse = MakeIndex(txn, t.warehouse, "ix_warehouse",
         IndexOrder::INDEX_ORDER_PRIMARY, true, WH_KEY_LEN,
-        {{WH::W_ID, 8}});
+        {{WH::W_ID, K}});
     if (!t.ix_warehouse) return false;
 
     // ---- DISTRICT (Clause 1.3.2) ----
@@ -116,7 +116,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable district: %s\n", RcToString(rc)); return false; }
     t.ix_district = MakeIndex(txn, t.district, "ix_district",
         IndexOrder::INDEX_ORDER_PRIMARY, true, DIST_KEY_LEN,
-        {{DIST::D_W_ID, 8}, {DIST::D_ID, 8}});
+        {{DIST::D_W_ID, K}, {DIST::D_ID, K}});
     if (!t.ix_district) return false;
 
     // ---- CUSTOMER (Clause 1.3.3) ----
@@ -148,12 +148,12 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable customer: %s\n", RcToString(rc)); return false; }
     t.ix_customer = MakeIndex(txn, t.customer, "ix_customer",
         IndexOrder::INDEX_ORDER_PRIMARY, true, CUST_KEY_LEN,
-        {{CUST::C_W_ID, 8}, {CUST::C_D_ID, 8}, {CUST::C_ID, 8}});
+        {{CUST::C_W_ID, K}, {CUST::C_D_ID, K}, {CUST::C_ID, K}});
     if (!t.ix_customer) return false;
     // Secondary: customer by last name (non-unique for mid-point selection per Clause 2.5.2.2)
     t.ix_customer_last = MakeIndex(txn, t.customer, "ix_customer_last",
         IndexOrder::INDEX_ORDER_SECONDARY, false, CUST_LAST_KEY_LEN,
-        {{CUST::C_W_ID, 8}, {CUST::C_D_ID, 8}, {CUST::C_LAST, 16}});
+        {{CUST::C_W_ID, K}, {CUST::C_D_ID, K}, {CUST::C_LAST, 16}});
     if (!t.ix_customer_last) return false;
 
     // ---- HISTORY (Clause 1.3.4) ----
@@ -173,7 +173,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // History has no natural PK per spec. We use a surrogate via H_C_ID slot.
     t.ix_history = MakeIndex(txn, t.history, "ix_history",
         IndexOrder::INDEX_ORDER_PRIMARY, true, HIST_KEY_LEN,
-        {{HIST::H_C_ID, 8}});
+        {{HIST::H_C_ID, K}});
     if (!t.ix_history) return false;
 
     // ---- NEW-ORDER (Clause 1.3.5) ----
@@ -187,7 +187,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable new_order: %s\n", RcToString(rc)); return false; }
     t.ix_new_order = MakeIndex(txn, t.new_order, "ix_new_order",
         IndexOrder::INDEX_ORDER_PRIMARY, true, ORDER_KEY_LEN,
-        {{NORD::NO_W_ID, 8}, {NORD::NO_D_ID, 8}, {NORD::NO_O_ID, 8}});
+        {{NORD::NO_W_ID, K}, {NORD::NO_D_ID, K}, {NORD::NO_O_ID, K}});
     if (!t.ix_new_order) return false;
 
     // ---- ORDER (Clause 1.3.6) ----
@@ -206,7 +206,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable oorder: %s\n", RcToString(rc)); return false; }
     t.ix_order = MakeIndex(txn, t.order_tbl, "ix_order",
         IndexOrder::INDEX_ORDER_PRIMARY, true, ORDER_KEY_LEN,
-        {{ORD::O_W_ID, 8}, {ORD::O_D_ID, 8}, {ORD::O_ID, 8}});
+        {{ORD::O_W_ID, K}, {ORD::O_D_ID, K}, {ORD::O_ID, K}});
     if (!t.ix_order) return false;
 
     // ---- ORDER-LINE (Clause 1.3.7) ----
@@ -227,7 +227,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable order_line: %s\n", RcToString(rc)); return false; }
     t.ix_order_line = MakeIndex(txn, t.order_line, "ix_order_line",
         IndexOrder::INDEX_ORDER_PRIMARY, true, OL_KEY_LEN,
-        {{ORDL::OL_W_ID, 8}, {ORDL::OL_D_ID, 8}, {ORDL::OL_O_ID, 8}, {ORDL::OL_NUMBER, 8}});
+        {{ORDL::OL_W_ID, K}, {ORDL::OL_D_ID, K}, {ORDL::OL_O_ID, K}, {ORDL::OL_NUMBER, K}});
     if (!t.ix_order_line) return false;
 
     // ---- ITEM (Clause 1.3.8) ----
@@ -243,7 +243,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable item: %s\n", RcToString(rc)); return false; }
     t.ix_item = MakeIndex(txn, t.item, "ix_item",
         IndexOrder::INDEX_ORDER_PRIMARY, true, ITEM_KEY_LEN,
-        {{ITEM::I_ID, 8}});
+        {{ITEM::I_ID, K}});
     if (!t.ix_item) return false;
 
     // ---- STOCK (Clause 1.3.9) ----
@@ -271,7 +271,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable stock: %s\n", RcToString(rc)); return false; }
     t.ix_stock = MakeIndex(txn, t.stock, "ix_stock",
         IndexOrder::INDEX_ORDER_PRIMARY, true, STOCK_KEY_LEN,
-        {{STK::S_W_ID, 8}, {STK::S_I_ID, 8}});
+        {{STK::S_W_ID, K}, {STK::S_I_ID, K}});
     if (!t.ix_stock) return false;
 
     return true;

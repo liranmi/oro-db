@@ -18,8 +18,9 @@ enum Col : int {
     FIELD_0  = 1  // FIELD_i = FIELD_0 + i
 };
 
-// Key: single uint64, 8 bytes big-endian
-static constexpr uint16_t YCSB_KEY_LEN = 8;
+// Key: single uint64, 9 bytes per ColumnLONG::PackKey (1 sign + 8 BE)
+// ALIGN8(9) = 16 to match Search's ALIGN8(keyLen) vs insert's raw keyLen
+static constexpr uint16_t YCSB_KEY_LEN = 16;
 
 }  // namespace oro::ycsb
 #endif  // ORO_YCSB_CONFIG_H
