@@ -24,6 +24,12 @@
 
 using namespace MOT;
 
+// Helper: set a string column value (Row::SetValue(int, char*) is protected)
+static inline void SetStringValue(Row* row, int colId, const char* str)
+{
+    row->SetValueVariable(colId, str, strlen(str) + 1);
+}
+
 namespace oro::tpcc {
 
 // ======================================================================
@@ -36,7 +42,7 @@ static Index* MakeIndex(TxnManager* txn, Table* table, const char* name,
     RC rc = RC_OK;
     Index* ix = IndexFactory::CreateIndexEx(
         order, IndexingMethod::INDEXING_METHOD_TREE,
-        DEFAULT_TREE_FLAVOR, unique, keyLen, name, rc);
+        DEFAULT_TREE_FLAVOR, unique, keyLen, name, rc, nullptr);
     if (ix == nullptr || rc != RC_OK) {
         fprintf(stderr, "ERROR: Failed to create index '%s': %s\n", name, RcToString(rc));
         return nullptr;
@@ -299,7 +305,7 @@ static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
         row->SetValue<uint64_t>(ITEM::I_IM_ID, rng.NextUniform(1, 10000));
 
         char name[25]; rng.RandomString(name, 14, 24);
-        row->SetValue(ITEM::I_NAME, name);
+        SetStringValue(row, ITEM::I_NAME, name);
         row->SetValue<double>(ITEM::I_PRICE, (double)rng.NextUniform(100, 10000) / 100.0);
 
         char data[51]; rng.RandomString(data, 26, 50);
@@ -308,7 +314,7 @@ static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
             uint32_t pos = (uint32_t)rng.NextUniform(0, strlen(data) > 8 ? strlen(data) - 8 : 0);
             memcpy(data + pos, "ORIGINAL", 8);
         }
-        row->SetValue(ITEM::I_DATA, data);
+        SetStringValue(row, ITEM::I_DATA, data);
 
         if (!InsertAndCommit(txn, t.item, row)) {
             fprintf(stderr, "WARN: Failed to insert ITEM %lu\n", (unsigned long)i);
@@ -322,12 +328,12 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     Row* row = t.warehouse->CreateNewRow();
     row->SetValue<uint64_t>(WH::W_ID, w_id);
     char buf[21];
-    rng.RandomString(buf, 6, 10); row->SetValue(WH::W_NAME, buf);
-    rng.RandomString(buf, 10, 20); row->SetValue(WH::W_STREET_1, buf);
-    rng.RandomString(buf, 10, 20); row->SetValue(WH::W_STREET_2, buf);
-    rng.RandomString(buf, 10, 20); row->SetValue(WH::W_CITY, buf);
-    rng.RandomString(buf, 2, 2);   row->SetValue(WH::W_STATE, buf);
-    rng.RandomNumericString(buf, 9);row->SetValue(WH::W_ZIP, buf);
+    rng.RandomString(buf, 6, 10); SetStringValue(row, WH::W_NAME, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_1, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_2, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_CITY, buf);
+    rng.RandomString(buf, 2, 2);   SetStringValue(row, WH::W_STATE, buf);
+    rng.RandomNumericString(buf, 9);SetStringValue(row, WH::W_ZIP, buf);
     row->SetValue<double>(WH::W_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
     row->SetValue<double>(WH::W_YTD, 300000.00);
     InsertAndCommit(txn, t.warehouse, row);
@@ -341,12 +347,12 @@ static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
         row->SetValue<uint64_t>(DIST::D_ID, d);
         row->SetValue<uint64_t>(DIST::D_W_ID, w_id);
         char buf[21];
-        rng.RandomString(buf, 6, 10); row->SetValue(DIST::D_NAME, buf);
-        rng.RandomString(buf, 10, 20); row->SetValue(DIST::D_STREET_1, buf);
-        rng.RandomString(buf, 10, 20); row->SetValue(DIST::D_STREET_2, buf);
-        rng.RandomString(buf, 10, 20); row->SetValue(DIST::D_CITY, buf);
-        rng.RandomString(buf, 2, 2);   row->SetValue(DIST::D_STATE, buf);
-        rng.RandomNumericString(buf, 9);row->SetValue(DIST::D_ZIP, buf);
+        rng.RandomString(buf, 6, 10); SetStringValue(row, DIST::D_NAME, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, DIST::D_STREET_1, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, DIST::D_STREET_2, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, DIST::D_CITY, buf);
+        rng.RandomString(buf, 2, 2);   SetStringValue(row, DIST::D_STATE, buf);
+        rng.RandomNumericString(buf, 9);SetStringValue(row, DIST::D_ZIP, buf);
         row->SetValue<double>(DIST::D_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
         row->SetValue<double>(DIST::D_YTD, 30000.00);
         row->SetValue<uint64_t>(DIST::D_NEXT_O_ID, ORD_PER_DIST + 1);
@@ -366,8 +372,8 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         row->SetValue<uint64_t>(CUST::C_W_ID, w_id);
 
         char buf[21];
-        rng.RandomString(buf, 8, 16); row->SetValue(CUST::C_FIRST, buf);
-        row->SetValue(CUST::C_MIDDLE, "OE");
+        rng.RandomString(buf, 8, 16); SetStringValue(row, CUST::C_FIRST, buf);
+        SetStringValue(row, CUST::C_MIDDLE, "OE");
 
         // Clause 4.3.2.3: C_LAST for C_ID [1..1000] is deterministic, rest is NURand
         char last[17];
@@ -375,16 +381,16 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
             GenLastName((uint32_t)(c - 1), last, sizeof(last));
         else
             GenLastName((uint32_t)NURand(rng, NURAND_C_LAST, 0, 999), last, sizeof(last));
-        row->SetValue(CUST::C_LAST, last);
+        SetStringValue(row, CUST::C_LAST, last);
 
-        rng.RandomString(buf, 10, 20); row->SetValue(CUST::C_STREET_1, buf);
-        rng.RandomString(buf, 10, 20); row->SetValue(CUST::C_STREET_2, buf);
-        rng.RandomString(buf, 10, 20); row->SetValue(CUST::C_CITY, buf);
-        rng.RandomString(buf, 2, 2);   row->SetValue(CUST::C_STATE, buf);
-        rng.RandomNumericString(buf, 9);row->SetValue(CUST::C_ZIP, buf);
-        rng.RandomNumericString(buf, 16);row->SetValue(CUST::C_PHONE, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_1, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_2, buf);
+        rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_CITY, buf);
+        rng.RandomString(buf, 2, 2);   SetStringValue(row, CUST::C_STATE, buf);
+        rng.RandomNumericString(buf, 9);SetStringValue(row, CUST::C_ZIP, buf);
+        rng.RandomNumericString(buf, 16);SetStringValue(row, CUST::C_PHONE, buf);
         row->SetValue<int64_t>(CUST::C_SINCE, now);
-        row->SetValue(CUST::C_CREDIT, (rng.NextUniform(1, 10) == 1) ? "BC" : "GC");
+        SetStringValue(row, CUST::C_CREDIT, (rng.NextUniform(1, 10) == 1) ? "BC" : "GC");
         row->SetValue<double>(CUST::C_CREDIT_LIM, 50000.00);
         row->SetValue<double>(CUST::C_DISCOUNT, (double)rng.NextUniform(0, 5000) / 10000.0);
         row->SetValue<double>(CUST::C_BALANCE, -10.00);
@@ -392,7 +398,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         row->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, 1);
         row->SetValue<uint64_t>(CUST::C_DELIVERY_CNT, 0);
         char data[501]; rng.RandomString(data, 300, 500);
-        row->SetValue(CUST::C_DATA, data);
+        SetStringValue(row, CUST::C_DATA, data);
         InsertAndCommit(txn, t.customer, row);
 
         // History row (Clause 4.3.3.1)
@@ -406,7 +412,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         hrow->SetValue<uint64_t>(HIST::H_W_ID, w_id);
         hrow->SetValue<int64_t>(HIST::H_DATE, now);
         hrow->SetValue<double>(HIST::H_AMOUNT, 10.00);
-        rng.RandomString(buf, 12, 24); hrow->SetValue(HIST::H_DATA, buf);
+        rng.RandomString(buf, 12, 24); SetStringValue(hrow, HIST::H_DATA, buf);
         InsertAndCommit(txn, t.history, hrow);
     }
 }
@@ -465,7 +471,7 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
             olrow->SetValue<double>(ORDL::OL_AMOUNT,
                 (o < 2101) ? 0.0 : (double)rng.NextUniform(1, 999999) / 100.0);
             char dist_info[25]; rng.RandomString(dist_info, 24, 24);
-            olrow->SetValue(ORDL::OL_DIST_INFO, dist_info);
+            SetStringValue(olrow, ORDL::OL_DIST_INFO, dist_info);
             InsertAndCommit(txn, t.order_line, olrow);
         }
     }
@@ -483,7 +489,7 @@ static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRan
         char dist[25];
         for (int d = 0; d < 10; d++) {
             rng.RandomString(dist, 24, 24);
-            row->SetValue(STK::S_DIST_01 + d, dist);
+            SetStringValue(row, STK::S_DIST_01 + d, dist);
         }
         row->SetValue<uint64_t>(STK::S_YTD, 0);
         row->SetValue<uint64_t>(STK::S_ORDER_CNT, 0);
@@ -493,7 +499,7 @@ static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRan
             uint32_t pos = (uint32_t)rng.NextUniform(0, strlen(data) > 8 ? strlen(data) - 8 : 0);
             memcpy(data + pos, "ORIGINAL", 8);
         }
-        row->SetValue(STK::S_DATA, data);
+        SetStringValue(row, STK::S_DATA, data);
         InsertAndCommit(txn, t.stock, row);
     }
 }

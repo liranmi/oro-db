@@ -65,7 +65,7 @@ bool CreateSchema(TxnManager* txn, YcsbTables& tables,
         true,          // unique
         YCSB_KEY_LEN,  // key length = 8 bytes
         "ix_usertable_pk",
-        rc);
+        rc, nullptr);
     if (ix == nullptr || rc != RC_OK) {
         fprintf(stderr, "ERROR: Failed to create index 'ix_usertable_pk': %s\n",
                 RcToString(rc));
@@ -145,7 +145,7 @@ bool PopulateData(MOTEngine* engine, YcsbTables& tables,
         // Columns 1..N: random alphanumeric strings
         for (uint32_t f = 0; f < field_count; f++) {
             rng.RandomString(fieldBuf, field_length, field_length);
-            row->SetValue(Col::FIELD_0 + f, fieldBuf);
+            row->SetValueVariable(Col::FIELD_0 + f, fieldBuf, strlen(fieldBuf) + 1);
         }
 
         if (InsertAndCommit(txn, tables.usertable, row)) {

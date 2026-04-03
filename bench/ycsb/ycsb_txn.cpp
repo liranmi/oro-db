@@ -140,7 +140,7 @@ static RC DoUpdate(TxnManager* txn, const YcsbTables& tables,
     char buf[256];
     uint32_t len = (field_length < sizeof(buf)) ? field_length : (uint32_t)(sizeof(buf) - 1);
     rng.RandomString(buf, len, len);
-    row->SetValue(target_field, buf);
+    row->SetValueVariable(target_field, buf, strlen(buf) + 1);
 
     return RC_OK;
 }
@@ -164,7 +164,7 @@ static RC DoInsert(TxnManager* txn, const YcsbTables& tables,
     uint32_t len = (field_length < sizeof(buf)) ? field_length : (uint32_t)(sizeof(buf) - 1);
     for (uint32_t f = 0; f < field_count; f++) {
         rng.RandomString(buf, len, len);
-        row->SetValue(Col::FIELD_0 + (int)f, buf);
+        row->SetValueVariable(Col::FIELD_0 + (int)f, buf, strlen(buf) + 1);
     }
 
     rc = txn->InsertRow(row);
@@ -241,7 +241,7 @@ static RC DoReadModifyWrite(TxnManager* txn, const YcsbTables& tables,
     char buf[256];
     uint32_t len = (field_length < sizeof(buf)) ? field_length : (uint32_t)(sizeof(buf) - 1);
     rng.RandomString(buf, len, len);
-    row->SetValue(target_field, buf);
+    row->SetValueVariable(target_field, buf, strlen(buf) + 1);
 
     return RC_OK;
 }
