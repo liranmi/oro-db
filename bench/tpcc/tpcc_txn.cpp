@@ -158,13 +158,13 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double w_ytd; w_row->GetValue(WH::W_YTD, w_ytd);
-    w_row->SetValue<double>(WH::W_YTD, w_ytd + p.h_amount);
+    txn->UpdateRow(w_row, WH::W_YTD, w_ytd + p.h_amount);
 
     // SQL: UPDATE DISTRICT SET D_YTD += :h_amount
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD_FOR_UPDATE, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double d_ytd; d_row->GetValue(DIST::D_YTD, d_ytd);
-    d_row->SetValue<double>(DIST::D_YTD, d_ytd + p.h_amount);
+    txn->UpdateRow(d_row, DIST::D_YTD, d_ytd + p.h_amount);
 
     // Customer lookup
     Row* c_row = nullptr;
