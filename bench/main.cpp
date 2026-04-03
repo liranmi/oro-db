@@ -284,7 +284,16 @@ int main(int argc, char* argv[])
             MOT::MOTEngine::DestroyInstance();
             return 1;
         }
-        ddl_txn->LiteCommit();
+        {
+            MOT::RC drc = ddl_txn->Commit();
+            if (drc != MOT::RC_OK) {
+                fprintf(stderr, "FATAL: Schema commit: %s\n", MOT::RcToString(drc));
+                engine->GetSessionManager()->DestroySessionContext(ddl_session);
+                MOT::MOTEngine::DestroyInstance();
+                return 1;
+            }
+            ddl_txn->EndTransaction();
+        }
         printf("    TPC-C schema created.\n");
 
         printf("[3] Populating TPC-C data (%u warehouses)...\n", cfg.tpcc_warehouses);
