@@ -152,6 +152,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // TODO: secondary index ix_customer_last for by-last-name lookup
 
     // ---- HISTORY (Clause 1.3.4) ----
+    // No natural PK per spec — use fake primary with surrogate m_rowId
     t.history = new Table();
     if (!t.history->Init("history", "public.history", HIST::H_NUM_COLS)) return false;
     t.history->AddColumn("H_C_D_ID", 8,  F::MOT_TYPE_LONG,    false);
@@ -161,13 +162,26 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.history->AddColumn("H_DATE",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_AMOUNT", 8,  F::MOT_TYPE_DOUBLE,  false);
     t.history->AddColumn("H_DATA",   24, F::MOT_TYPE_VARCHAR, false);
-    t.history->AddColumn("H_KEY",    8,  F::MOT_TYPE_LONG,    true);
     if (!t.history->InitRowPool()) return false;
     if (!t.history->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.history);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable history: %s\n", RcToString(rc)); return false; }
-    t.ix_history = MakePrimaryIndex(txn, t.history, "ix_history");
-    if (!t.ix_history) return false;
+    {
+        // Fake primary index — key is the auto-generated surrogate m_rowId
+        uint32_t keyLen = sizeof(uint64_t);  // 8 bytes for surrogate key
+        RC irc = RC_OK;
+        Index* ix = IndexFactory::CreateIndexEx(
+            IndexOrder::INDEX_ORDER_PRIMARY, IndexingMethod::INDEXING_METHOD_TREE,
+            DEFAULT_TREE_FLAVOR, true, keyLen, "ix_history", irc, nullptr);
+        if (!ix || irc != RC_OK) { fprintf(stderr, "ERROR: ix_history: %s\n", RcToString(irc)); return false; }
+        if (!ix->SetNumTableFields(t.history->GetFieldCount())) { delete ix; return false; }
+        ix->SetNumIndexFields(0);  // no user key fields — surrogate
+        ix->SetTable(t.history);
+        ix->SetFakePrimary(true);
+        irc = txn->CreateIndex(t.history, ix, true);
+        if (irc != RC_OK) { delete ix; return false; }
+        t.ix_history = ix;
+    }
 
     // ---- NEW-ORDER (Clause 1.3.5) ----
     t.new_order = new Table();
@@ -408,7 +422,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         hrow->SetValue<double>(HIST::H_AMOUNT, 10.00);
         char buf[25]; rng.RandomString(buf, 12, 24);
         SetStringValue(hrow, HIST::H_DATA, buf);
-        hrow->SetInternalKey(HIST::H_KEY, NextHistoryKey());
+        // No SetInternalKey — fake primary auto-generates surrogate via SetRowId
         t.history->InsertRow(hrow, txn);
     }
     txn->Commit();

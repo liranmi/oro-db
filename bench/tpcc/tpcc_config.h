@@ -88,7 +88,7 @@ enum CUST : int {
     C_NUM_COLS
 };
 
-// HISTORY table columns
+// HISTORY table columns — no natural PK, uses fake primary (surrogate m_rowId)
 enum HIST : int {
     H_C_D_ID = 0,
     H_C_W_ID,
@@ -97,8 +97,7 @@ enum HIST : int {
     H_DATE,            // datetime -> int64
     H_AMOUNT,          // decimal(6,2) -> double
     H_DATA,            // varchar(24)
-    H_KEY,             // surrogate key: NextHistoryKey()
-    H_NUM_COLS
+    H_NUM_COLS         // no _KEY column — fake primary uses m_rowId
 };
 
 // NEW-ORDER table columns
