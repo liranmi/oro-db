@@ -229,6 +229,29 @@ static void LL_InsertAndRead(void)
     idx->DestroyKey(key);
 }
 
+static void LL_SequentialInsertAndLookup(void)
+{
+    /* Insert keys 1..10 */
+    for (uint64_t i = 1; i <= 10; ++i) {
+        MOT::RC rc = TxnInsert(g_ll.dmlTxn, g_ll.table, i, (int64_t)(i * 100));
+        TEST_ASSERT_RC(rc, "Insert sequential key");
+    }
+
+    /* Lookup keys 1..10 */
+    MOT::Index* idx = g_ll.table->GetPrimaryIndex();
+    for (uint64_t i = 1; i <= 10; ++i) {
+        MOT::Key* key = idx->CreateNewKey();
+        BuildSearchKey(idx, g_ll.table, i, key);
+        MOT::Row* row = idx->IndexRead(key, 0);
+        TEST_ASSERT(row != nullptr, "Lookup sequential key");
+        uint64_t readId; row->GetValue(1, readId);
+        TEST_ASSERT(readId == i, "Read back correct id");
+        int64_t readVal; row->GetValue(0, readVal);
+        TEST_ASSERT(readVal == (int64_t)(i * 100), "Read back correct val");
+        idx->DestroyKey(key);
+    }
+}
+
 static void LL_DuplicateRejection(void)
 {
     MOT::RC rc = TxnInsert(g_ll.dmlTxn, g_ll.table, 100, 1000);
@@ -786,6 +809,7 @@ int main(int argc, char* argv[])
 
     printf("[Part 1: Low-Level Index API]\n");
     RUN_TEST(LL_InsertAndRead());
+    RUN_TEST(LL_SequentialInsertAndLookup());
     RUN_TEST(LL_LookupMissing());
     RUN_TEST(LL_BoundaryKeys());
     RUN_TEST(LL_ForwardScanOrdering());
