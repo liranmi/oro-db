@@ -53,6 +53,14 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     // SQL: SELECT W_TAX FROM WAREHOUSE WHERE W_ID = :w_id
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD,
                         PackWhKey(p.w_id), rc);
+    if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+
+    // DEBUG: minimal test — just read warehouse and commit
+    rc = txn->Commit();
+    txn->EndTransaction();
+    return rc;
+    // END DEBUG
+
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc; }
     double w_tax;
     w_row->GetValue(WH::W_TAX, w_tax);
