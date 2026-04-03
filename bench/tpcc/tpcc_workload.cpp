@@ -3,6 +3,10 @@
  *
  * Schema follows TPC-C Standard Specification Rev 5.11, Clause 1.3.
  * Population follows Clause 4.3.3.
+ *
+ * Key convention: each table has a packed _KEY column as the LAST column.
+ * This enables the InternalKey path in MOT's BuildKey (raw CpKey, no PackKey).
+ * Composite keys are packed into a single uint64 via PackXxxKey() helpers.
  */
 
 #include "tpcc_workload.h"
@@ -10,6 +14,7 @@
 #include "tpcc_helper.h"
 #include "bench_util.h"
 #include "catalog_column_types.h"
+#include "mot_configuration.h"
 #include "row.h"
 #include "session_manager.h"
 #include "table_manager.h"
@@ -33,33 +38,32 @@ static inline void SetStringValue(Row* row, int colId, const char* str)
 namespace oro::tpcc {
 
 // ======================================================================
-// Helper: create an index, set key column metadata, register with txn
+// Helper: create a primary index on the LAST column of the table.
+// Follows the test_index.cpp pattern: keyLen = raw column size (8 bytes).
 // ======================================================================
-static Index* MakeIndex(TxnManager* txn, Table* table, const char* name,
-                        IndexOrder order, bool unique, uint32_t keyLen,
-                        const std::vector<std::pair<int, uint16_t>>& keyCols)
+static Index* MakePrimaryIndex(TxnManager* txn, Table* table, const char* name)
 {
+    int lastCol = table->GetFieldCount() - 1;
+    uint32_t keyLen = table->GetFieldSize(lastCol);  // 8 = sizeof(uint64_t)
+
     RC rc = RC_OK;
     Index* ix = IndexFactory::CreateIndexEx(
-        order, IndexingMethod::INDEXING_METHOD_TREE,
-        DEFAULT_TREE_FLAVOR, unique, keyLen, name, rc, nullptr);
-    if (ix == nullptr || rc != RC_OK) {
+        IndexOrder::INDEX_ORDER_PRIMARY, IndexingMethod::INDEXING_METHOD_TREE,
+        DEFAULT_TREE_FLAVOR, true, keyLen, name, rc, nullptr);
+    if (!ix || rc != RC_OK) {
         fprintf(stderr, "ERROR: Failed to create index '%s': %s\n", name, RcToString(rc));
         return nullptr;
     }
-
     if (!ix->SetNumTableFields(table->GetFieldCount())) {
-        fprintf(stderr, "ERROR: SetNumTableFields failed for index '%s'\n", name);
+        fprintf(stderr, "ERROR: SetNumTableFields failed for '%s'\n", name);
         delete ix;
         return nullptr;
     }
-    ix->SetNumIndexFields((uint32_t)keyCols.size());
-    for (uint32_t i = 0; i < keyCols.size(); i++) {
-        ix->SetLenghtKeyFields(i, keyCols[i].first, keyCols[i].second);
-    }
+    ix->SetNumIndexFields(1);
+    ix->SetLenghtKeyFields(0, lastCol, keyLen);
     ix->SetTable(table);
 
-    rc = txn->CreateIndex(table, ix, order == IndexOrder::INDEX_ORDER_PRIMARY);
+    rc = txn->CreateIndex(table, ix, true);
     if (rc != RC_OK) {
         fprintf(stderr, "ERROR: CreateIndex '%s' failed: %s\n", name, RcToString(rc));
         delete ix;
@@ -70,43 +74,36 @@ static Index* MakeIndex(TxnManager* txn, Table* table, const char* name,
 
 // ======================================================================
 // Schema creation — Full schema (Clause 1.3)
+// Column order: data columns first, packed _KEY column LAST.
 // ======================================================================
 bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
 {
     using F = MOT_CATALOG_FIELD_TYPES;
     RC rc;
-    (void)small_schema;  // TODO: small schema variant
+    (void)small_schema;
 
     // ---- WAREHOUSE (Clause 1.3.1) ----
-    // Key column (W_ID) must be LAST for InternalKey path in BuildKey
     t.warehouse = new Table();
     if (!t.warehouse->Init("warehouse", "public.warehouse", WH::W_NUM_COLS)) return false;
-    t.warehouse->AddColumn("W_NAME",     10,  F::MOT_TYPE_VARCHAR, false);  // 0
-    t.warehouse->AddColumn("W_STREET_1", 20,  F::MOT_TYPE_VARCHAR, false);  // 1
-    t.warehouse->AddColumn("W_STREET_2", 20,  F::MOT_TYPE_VARCHAR, false);  // 2
-    t.warehouse->AddColumn("W_CITY",     20,  F::MOT_TYPE_VARCHAR, false);  // 3
-    t.warehouse->AddColumn("W_STATE",    2,   F::MOT_TYPE_VARCHAR, false);  // 4
-    t.warehouse->AddColumn("W_ZIP",      9,   F::MOT_TYPE_VARCHAR, false);  // 5
-    t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);  // 6
-    t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);  // 7
-    t.warehouse->AddColumn("W_ID",       8,   F::MOT_TYPE_LONG,    true);   // 8 KEY LAST
+    t.warehouse->AddColumn("W_NAME",     10,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STREET_1", 20,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STREET_2", 20,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_CITY",     20,  F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_STATE",    2,   F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_ZIP",      9,   F::MOT_TYPE_VARCHAR, false);
+    t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);
+    t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);
+    t.warehouse->AddColumn("W_KEY",      8,   F::MOT_TYPE_LONG,    true);
     if (!t.warehouse->InitRowPool()) return false;
+    if (!t.warehouse->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.warehouse);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable warehouse: %s\n", RcToString(rc)); return false; }
-    {
-        int lastCol = t.warehouse->GetFieldCount() - 1;  // W_ID at position 8
-        uint32_t keyLen = t.warehouse->GetFieldSize(lastCol);  // 8 bytes raw
-        t.ix_warehouse = MakeIndex(txn, t.warehouse, "ix_warehouse",
-            IndexOrder::INDEX_ORDER_PRIMARY, true, keyLen,
-            {{lastCol, (uint16_t)keyLen}});
-    }
+    t.ix_warehouse = MakePrimaryIndex(txn, t.warehouse, "ix_warehouse");
     if (!t.ix_warehouse) return false;
 
     // ---- DISTRICT (Clause 1.3.2) ----
     t.district = new Table();
     if (!t.district->Init("district", "public.district", DIST::D_NUM_COLS)) return false;
-    t.district->AddColumn("D_ID",        8,  F::MOT_TYPE_LONG,    true);
-    t.district->AddColumn("D_W_ID",      8,  F::MOT_TYPE_LONG,    true);
     t.district->AddColumn("D_NAME",      10, F::MOT_TYPE_VARCHAR, false);
     t.district->AddColumn("D_STREET_1",  20, F::MOT_TYPE_VARCHAR, false);
     t.district->AddColumn("D_STREET_2",  20, F::MOT_TYPE_VARCHAR, false);
@@ -116,20 +113,17 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.district->AddColumn("D_TAX",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_YTD",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_NEXT_O_ID", 8,  F::MOT_TYPE_LONG,    false);
+    t.district->AddColumn("D_KEY",       8,  F::MOT_TYPE_LONG,    true);
     if (!t.district->InitRowPool()) return false;
+    if (!t.district->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.district);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable district: %s\n", RcToString(rc)); return false; }
-    t.ix_district = MakeIndex(txn, t.district, "ix_district",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, DIST_KEY_LEN,
-        {{DIST::D_W_ID, K}, {DIST::D_ID, K}});
+    t.ix_district = MakePrimaryIndex(txn, t.district, "ix_district");
     if (!t.ix_district) return false;
 
     // ---- CUSTOMER (Clause 1.3.3) ----
     t.customer = new Table();
     if (!t.customer->Init("customer", "public.customer", CUST::C_NUM_COLS)) return false;
-    t.customer->AddColumn("C_ID",          8,   F::MOT_TYPE_LONG,    true);
-    t.customer->AddColumn("C_D_ID",        8,   F::MOT_TYPE_LONG,    true);
-    t.customer->AddColumn("C_W_ID",        8,   F::MOT_TYPE_LONG,    true);
     t.customer->AddColumn("C_FIRST",       16,  F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_MIDDLE",      2,   F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_LAST",        16,  F::MOT_TYPE_VARCHAR, false);
@@ -148,23 +142,18 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.customer->AddColumn("C_PAYMENT_CNT", 8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_DELIVERY_CNT",8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_DATA",        500, F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_KEY",         8,   F::MOT_TYPE_LONG,    true);
     if (!t.customer->InitRowPool()) return false;
+    if (!t.customer->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.customer);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable customer: %s\n", RcToString(rc)); return false; }
-    t.ix_customer = MakeIndex(txn, t.customer, "ix_customer",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, CUST_KEY_LEN,
-        {{CUST::C_W_ID, K}, {CUST::C_D_ID, K}, {CUST::C_ID, K}});
+    t.ix_customer = MakePrimaryIndex(txn, t.customer, "ix_customer");
     if (!t.ix_customer) return false;
-    // Secondary: customer by last name (non-unique for mid-point selection per Clause 2.5.2.2)
-    t.ix_customer_last = MakeIndex(txn, t.customer, "ix_customer_last",
-        IndexOrder::INDEX_ORDER_SECONDARY, false, CUST_LAST_KEY_LEN,
-        {{CUST::C_W_ID, K}, {CUST::C_D_ID, K}, {CUST::C_LAST, 16}});
-    if (!t.ix_customer_last) return false;
+    // TODO: secondary index ix_customer_last for by-last-name lookup
 
     // ---- HISTORY (Clause 1.3.4) ----
     t.history = new Table();
     if (!t.history->Init("history", "public.history", HIST::H_NUM_COLS)) return false;
-    t.history->AddColumn("H_C_ID",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_C_D_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_C_W_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_D_ID",   8,  F::MOT_TYPE_LONG,    false);
@@ -172,90 +161,83 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.history->AddColumn("H_DATE",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_AMOUNT", 8,  F::MOT_TYPE_DOUBLE,  false);
     t.history->AddColumn("H_DATA",   24, F::MOT_TYPE_VARCHAR, false);
+    t.history->AddColumn("H_KEY",    8,  F::MOT_TYPE_LONG,    true);
     if (!t.history->InitRowPool()) return false;
+    if (!t.history->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.history);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable history: %s\n", RcToString(rc)); return false; }
-    // History has no natural PK per spec. We use a surrogate via H_C_ID slot.
-    t.ix_history = MakeIndex(txn, t.history, "ix_history",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, HIST_KEY_LEN,
-        {{HIST::H_C_ID, K}});
+    t.ix_history = MakePrimaryIndex(txn, t.history, "ix_history");
     if (!t.ix_history) return false;
 
     // ---- NEW-ORDER (Clause 1.3.5) ----
     t.new_order = new Table();
     if (!t.new_order->Init("new_order", "public.new_order", NORD::NO_NUM_COLS)) return false;
-    t.new_order->AddColumn("NO_O_ID", 8, F::MOT_TYPE_LONG, true);
-    t.new_order->AddColumn("NO_D_ID", 8, F::MOT_TYPE_LONG, true);
-    t.new_order->AddColumn("NO_W_ID", 8, F::MOT_TYPE_LONG, true);
+    t.new_order->AddColumn("NO_O_ID", 8, F::MOT_TYPE_LONG, false);
+    t.new_order->AddColumn("NO_D_ID", 8, F::MOT_TYPE_LONG, false);
+    t.new_order->AddColumn("NO_W_ID", 8, F::MOT_TYPE_LONG, false);
+    t.new_order->AddColumn("NO_KEY",  8, F::MOT_TYPE_LONG, true);
     if (!t.new_order->InitRowPool()) return false;
+    if (!t.new_order->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.new_order);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable new_order: %s\n", RcToString(rc)); return false; }
-    t.ix_new_order = MakeIndex(txn, t.new_order, "ix_new_order",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, ORDER_KEY_LEN,
-        {{NORD::NO_W_ID, K}, {NORD::NO_D_ID, K}, {NORD::NO_O_ID, K}});
+    t.ix_new_order = MakePrimaryIndex(txn, t.new_order, "ix_new_order");
     if (!t.ix_new_order) return false;
 
     // ---- ORDER (Clause 1.3.6) ----
     t.order_tbl = new Table();
     if (!t.order_tbl->Init("oorder", "public.oorder", ORD::O_NUM_COLS)) return false;
-    t.order_tbl->AddColumn("O_ID",         8, F::MOT_TYPE_LONG, true);
     t.order_tbl->AddColumn("O_C_ID",       8, F::MOT_TYPE_LONG, false);
-    t.order_tbl->AddColumn("O_D_ID",       8, F::MOT_TYPE_LONG, true);
-    t.order_tbl->AddColumn("O_W_ID",       8, F::MOT_TYPE_LONG, true);
+    t.order_tbl->AddColumn("O_D_ID",       8, F::MOT_TYPE_LONG, false);
+    t.order_tbl->AddColumn("O_W_ID",       8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_ENTRY_D",    8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_CARRIER_ID", 8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_OL_CNT",     8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_ALL_LOCAL",  8, F::MOT_TYPE_LONG, false);
+    t.order_tbl->AddColumn("O_KEY",        8, F::MOT_TYPE_LONG, true);
     if (!t.order_tbl->InitRowPool()) return false;
+    if (!t.order_tbl->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.order_tbl);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable oorder: %s\n", RcToString(rc)); return false; }
-    t.ix_order = MakeIndex(txn, t.order_tbl, "ix_order",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, ORDER_KEY_LEN,
-        {{ORD::O_W_ID, K}, {ORD::O_D_ID, K}, {ORD::O_ID, K}});
+    t.ix_order = MakePrimaryIndex(txn, t.order_tbl, "ix_order");
     if (!t.ix_order) return false;
 
     // ---- ORDER-LINE (Clause 1.3.7) ----
     t.order_line = new Table();
     if (!t.order_line->Init("order_line", "public.order_line", ORDL::OL_NUM_COLS)) return false;
-    t.order_line->AddColumn("OL_O_ID",       8,  F::MOT_TYPE_LONG,    true);
-    t.order_line->AddColumn("OL_D_ID",       8,  F::MOT_TYPE_LONG,    true);
-    t.order_line->AddColumn("OL_W_ID",       8,  F::MOT_TYPE_LONG,    true);
-    t.order_line->AddColumn("OL_NUMBER",     8,  F::MOT_TYPE_LONG,    true);
     t.order_line->AddColumn("OL_I_ID",       8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_D_ID",       8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_W_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_SUPPLY_W_ID",8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_DELIVERY_D", 8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_AMOUNT",     8,  F::MOT_TYPE_DOUBLE,  false);
     t.order_line->AddColumn("OL_DIST_INFO",  24, F::MOT_TYPE_VARCHAR, false);
+    t.order_line->AddColumn("OL_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.order_line->InitRowPool()) return false;
+    if (!t.order_line->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.order_line);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable order_line: %s\n", RcToString(rc)); return false; }
-    t.ix_order_line = MakeIndex(txn, t.order_line, "ix_order_line",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, OL_KEY_LEN,
-        {{ORDL::OL_W_ID, K}, {ORDL::OL_D_ID, K}, {ORDL::OL_O_ID, K}, {ORDL::OL_NUMBER, K}});
+    t.ix_order_line = MakePrimaryIndex(txn, t.order_line, "ix_order_line");
     if (!t.ix_order_line) return false;
 
     // ---- ITEM (Clause 1.3.8) ----
     t.item = new Table();
     if (!t.item->Init("item", "public.item", ITEM::I_NUM_COLS)) return false;
-    t.item->AddColumn("I_ID",    8,  F::MOT_TYPE_LONG,    true);
     t.item->AddColumn("I_IM_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.item->AddColumn("I_NAME",  24, F::MOT_TYPE_VARCHAR, false);
     t.item->AddColumn("I_PRICE", 8,  F::MOT_TYPE_DOUBLE,  false);
     t.item->AddColumn("I_DATA",  50, F::MOT_TYPE_VARCHAR, false);
+    t.item->AddColumn("I_KEY",   8,  F::MOT_TYPE_LONG,    true);
     if (!t.item->InitRowPool()) return false;
+    if (!t.item->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.item);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable item: %s\n", RcToString(rc)); return false; }
-    t.ix_item = MakeIndex(txn, t.item, "ix_item",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, ITEM_KEY_LEN,
-        {{ITEM::I_ID, K}});
+    t.ix_item = MakePrimaryIndex(txn, t.item, "ix_item");
     if (!t.ix_item) return false;
 
     // ---- STOCK (Clause 1.3.9) ----
     t.stock = new Table();
     if (!t.stock->Init("stock", "public.stock", STK::S_NUM_COLS)) return false;
-    t.stock->AddColumn("S_I_ID",       8,  F::MOT_TYPE_LONG,    true);
-    t.stock->AddColumn("S_W_ID",       8,  F::MOT_TYPE_LONG,    true);
     t.stock->AddColumn("S_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_DIST_01",    24, F::MOT_TYPE_VARCHAR, false);
     t.stock->AddColumn("S_DIST_02",    24, F::MOT_TYPE_VARCHAR, false);
@@ -271,12 +253,12 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.stock->AddColumn("S_ORDER_CNT",  8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_REMOTE_CNT", 8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_DATA",       50, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.stock->InitRowPool()) return false;
+    if (!t.stock->InitTombStonePool()) return false;
     rc = txn->CreateTable(t.stock);
     if (rc != RC_OK) { fprintf(stderr, "CreateTable stock: %s\n", RcToString(rc)); return false; }
-    t.ix_stock = MakeIndex(txn, t.stock, "ix_stock",
-        IndexOrder::INDEX_ORDER_PRIMARY, true, STOCK_KEY_LEN,
-        {{STK::S_W_ID, K}, {STK::S_I_ID, K}});
+    t.ix_stock = MakePrimaryIndex(txn, t.stock, "ix_stock");
     if (!t.ix_stock) return false;
 
     return true;
@@ -284,120 +266,79 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
 
 // ======================================================================
 // Data Population — Clause 4.3.3
+//
+// Each population function uses a single bulk transaction:
+//   StartTransaction → loop(CreateNewRow, SetInternalKey, table->InsertRow) → Commit → EndTransaction
 // ======================================================================
-
-static bool InsertAndCommit(TxnManager* txn, Table* table, Row* row)
-{
-    RC rc = txn->InsertRow(row);
-    if (rc != RC_OK) {
-        table->DestroyRow(row);
-        txn->Rollback();
-        return false;
-    }
-    rc = txn->Commit();
-    return rc == RC_OK;
-}
 
 static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
 {
     printf("    Populating ITEM (%u rows)...\n", ITEM_COUNT);
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t i = 1; i <= ITEM_COUNT; i++) {
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
         Row* row = t.item->CreateNewRow();
-        if (!row) { txn->Rollback(); continue; }
-
-        row->SetValue<uint64_t>(ITEM::I_ID, i);
+        if (!row) continue;
         row->SetValue<uint64_t>(ITEM::I_IM_ID, rng.NextUniform(1, 10000));
-
         char name[25]; rng.RandomString(name, 14, 24);
         SetStringValue(row, ITEM::I_NAME, name);
         row->SetValue<double>(ITEM::I_PRICE, (double)rng.NextUniform(100, 10000) / 100.0);
-
         char data[51]; rng.RandomString(data, 26, 50);
-        // 10% of items have "ORIGINAL" in I_DATA (Clause 4.3.3.1)
         if (rng.NextUniform(1, 10) == 1) {
             uint32_t pos = (uint32_t)rng.NextUniform(0, strlen(data) > 8 ? strlen(data) - 8 : 0);
             memcpy(data + pos, "ORIGINAL", 8);
         }
         SetStringValue(row, ITEM::I_DATA, data);
-
-        if (!InsertAndCommit(txn, t.item, row)) {
-            fprintf(stderr, "WARN: Failed to insert ITEM %lu\n", (unsigned long)i);
+        row->SetInternalKey(ITEM::I_KEY, PackItemKey(i));
+        RC rc = t.item->InsertRow(row, txn);
+        if (rc != RC_OK) {
+            t.item->DestroyRow(row);
+            fprintf(stderr, "WARN: Failed to insert ITEM %lu: %s\n", (unsigned long)i, RcToString(rc));
         }
     }
+    RC rc = txn->Commit();
+    if (rc != RC_OK) fprintf(stderr, "WARN: ITEM commit failed: %s\n", RcToString(rc));
+    txn->EndTransaction();
 }
 
 static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
-
-    // Column layout: data cols 0-7, key col 8 (W_ID last)
-    enum WC { NAME=0, ST1, ST2, CITY, STATE, ZIP, TAX, YTD, ID };
     Row* row = t.warehouse->CreateNewRow();
     char buf[21];
-    rng.RandomString(buf, 6, 10);  SetStringValue(row, WC::NAME, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::ST1, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::ST2, buf);
-    rng.RandomString(buf, 10, 20); SetStringValue(row, WC::CITY, buf);
-    rng.RandomString(buf, 2, 2);   SetStringValue(row, WC::STATE, buf);
-    rng.RandomNumericString(buf, 9);SetStringValue(row, WC::ZIP, buf);
-    row->SetValue<double>(WC::TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
-    row->SetValue<double>(WC::YTD, 300000.00);
-    row->SetInternalKey(WC::ID, w_id);
-
-    RC rc = t.warehouse->InsertRow(row, txn);
-    if (rc != RC_OK) {
-        fprintf(stderr, "WARN: Failed to insert warehouse %lu: %s\n",
-                (unsigned long)w_id, RcToString(rc));
-        t.warehouse->DestroyRow(row);
-        txn->Rollback();
-        return;
-    }
-
-    rc = txn->Commit();
-    if (rc != RC_OK) {
-        fprintf(stderr, "WARN: Failed to commit warehouse %lu: %s\n",
-                (unsigned long)w_id, RcToString(rc));
-        return;
-    }
+    rng.RandomString(buf, 6, 10);  SetStringValue(row, WH::W_NAME, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_1, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_2, buf);
+    rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_CITY, buf);
+    rng.RandomString(buf, 2, 2);   SetStringValue(row, WH::W_STATE, buf);
+    rng.RandomNumericString(buf, 9);SetStringValue(row, WH::W_ZIP, buf);
+    row->SetValue<double>(WH::W_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
+    row->SetValue<double>(WH::W_YTD, 300000.00);
+    row->SetInternalKey(WH::W_KEY, PackWhKey(w_id));
+    t.warehouse->InsertRow(row, txn);
+    txn->Commit();
     txn->EndTransaction();
 
-    // Verify: point query the warehouse we just inserted
-    enum WC2 { V_ID = 8 };  // key col position
+    /* // Uncomment to verify warehouse readback:
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
-    Index* ix = t.warehouse->GetPrimaryIndex();
-    Key* vkey = ix->CreateNewKey();
-    Row* tmp = t.warehouse->CreateNewRow();
-    tmp->SetInternalKey(WC2::V_ID, w_id);
-    ix->BuildKey(t.warehouse, tmp, vkey);
-    t.warehouse->DestroyRow(tmp);
-
+    Key* vkey = BuildSearchKey(t.ix_warehouse, t.warehouse, PackWhKey(w_id));
     RC vrc = RC_OK;
     Row* found = txn->RowLookupByKey(t.warehouse, AccessType::RD, vkey, vrc);
     if (found) {
-        uint64_t read_id;
-        found->GetValue(WC2::V_ID, read_id);
-        double read_ytd, read_tax;
-        found->GetValue(7, read_ytd);  // YTD = col 7
-        found->GetValue(6, read_tax);  // TAX = col 6
-        fprintf(stderr, "VERIFY WH(%lu): OK  id=%lu ytd=%.2f tax=%.4f\n",
-                (unsigned long)w_id, (unsigned long)read_id, read_ytd, read_tax);
-        found->Print();
+        double ytd; found->GetValue(WH::W_YTD, ytd);
+        fprintf(stderr, "VERIFY WH(%lu): OK ytd=%.2f\n", (unsigned long)w_id, ytd);
     } else {
-        fprintf(stderr, "VERIFY WH(%lu): FAIL lookup=NULL rc=%d\n",
-                (unsigned long)w_id, (int)vrc);
+        fprintf(stderr, "VERIFY WH(%lu): FAIL\n", (unsigned long)w_id);
     }
-    ix->DestroyKey(vkey);
+    t.ix_warehouse->DestroyKey(vkey);
     txn->Rollback();
+    */
 }
 
 static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
         Row* row = t.district->CreateNewRow();
-        row->SetValue<uint64_t>(DIST::D_ID, d);
-        row->SetValue<uint64_t>(DIST::D_W_ID, w_id);
         char buf[21];
         rng.RandomString(buf, 6, 10); SetStringValue(row, DIST::D_NAME, buf);
         rng.RandomString(buf, 10, 20); SetStringValue(row, DIST::D_STREET_1, buf);
@@ -408,33 +349,31 @@ static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
         row->SetValue<double>(DIST::D_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
         row->SetValue<double>(DIST::D_YTD, 30000.00);
         row->SetValue<uint64_t>(DIST::D_NEXT_O_ID, ORD_PER_DIST + 1);
-        InsertAndCommit(txn, t.district, row);
+        row->SetInternalKey(DIST::D_KEY, PackDistKey(w_id, d));
+        t.district->InsertRow(row, txn);
     }
+    txn->Commit();
+    txn->EndTransaction();
 }
 
 static void PopulateCustomers(TxnManager* txn, TpccTables& t,
                               uint64_t w_id, uint64_t d_id, FastRandom& rng)
 {
     int64_t now = (int64_t)time(nullptr);
-    for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
-        Row* row = t.customer->CreateNewRow();
-        row->SetValue<uint64_t>(CUST::C_ID, c);
-        row->SetValue<uint64_t>(CUST::C_D_ID, d_id);
-        row->SetValue<uint64_t>(CUST::C_W_ID, w_id);
 
+    // Customer rows
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
+        Row* row = t.customer->CreateNewRow();
         char buf[21];
         rng.RandomString(buf, 8, 16); SetStringValue(row, CUST::C_FIRST, buf);
         SetStringValue(row, CUST::C_MIDDLE, "OE");
-
-        // Clause 4.3.2.3: C_LAST for C_ID [1..1000] is deterministic, rest is NURand
         char last[17];
         if (c <= 1000)
             GenLastName((uint32_t)(c - 1), last, sizeof(last));
         else
             GenLastName((uint32_t)NURand(rng, NURAND_C_LAST, 0, 999), last, sizeof(last));
         SetStringValue(row, CUST::C_LAST, last);
-
         rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_1, buf);
         rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_2, buf);
         rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_CITY, buf);
@@ -451,44 +390,50 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         row->SetValue<uint64_t>(CUST::C_DELIVERY_CNT, 0);
         char data[501]; rng.RandomString(data, 300, 500);
         SetStringValue(row, CUST::C_DATA, data);
-        InsertAndCommit(txn, t.customer, row);
+        row->SetInternalKey(CUST::C_KEY, PackCustKey(w_id, d_id, c));
+        t.customer->InsertRow(row, txn);
+    }
+    txn->Commit();
+    txn->EndTransaction();
 
-        // History row (Clause 4.3.3.1)
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    // History rows (separate transaction)
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
         Row* hrow = t.history->CreateNewRow();
-        uint64_t h_surr = (w_id << 40) | (d_id << 20) | c;
-        hrow->SetValue<uint64_t>(HIST::H_C_ID, h_surr);
         hrow->SetValue<uint64_t>(HIST::H_C_D_ID, d_id);
         hrow->SetValue<uint64_t>(HIST::H_C_W_ID, w_id);
         hrow->SetValue<uint64_t>(HIST::H_D_ID, d_id);
         hrow->SetValue<uint64_t>(HIST::H_W_ID, w_id);
         hrow->SetValue<int64_t>(HIST::H_DATE, now);
         hrow->SetValue<double>(HIST::H_AMOUNT, 10.00);
-        rng.RandomString(buf, 12, 24); SetStringValue(hrow, HIST::H_DATA, buf);
-        InsertAndCommit(txn, t.history, hrow);
+        char buf[25]; rng.RandomString(buf, 12, 24);
+        SetStringValue(hrow, HIST::H_DATA, buf);
+        hrow->SetInternalKey(HIST::H_KEY, NextHistoryKey());
+        t.history->InsertRow(hrow, txn);
     }
+    txn->Commit();
+    txn->EndTransaction();
 }
 
 static void PopulateOrders(TxnManager* txn, TpccTables& t,
                            uint64_t w_id, uint64_t d_id, FastRandom& rng)
 {
-    // Random permutation of customer IDs (Clause 4.3.3.1)
     std::vector<uint64_t> perm(CUST_PER_DIST);
     std::iota(perm.begin(), perm.end(), 1);
     for (uint32_t i = CUST_PER_DIST - 1; i > 0; i--) {
         uint32_t j = (uint32_t)rng.NextUniform(0, i);
         std::swap(perm[i], perm[j]);
     }
-
     int64_t now = (int64_t)time(nullptr);
+
+    // Orders + NewOrders + OrderLines in one transaction
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t o = 1; o <= ORD_PER_DIST; o++) {
         uint64_t c_id = perm[o - 1];
         uint64_t ol_cnt = rng.NextUniform(MIN_OL_CNT, MAX_OL_CNT);
 
         // ORDER row
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
         Row* orow = t.order_tbl->CreateNewRow();
-        orow->SetValue<uint64_t>(ORD::O_ID, o);
         orow->SetValue<uint64_t>(ORD::O_C_ID, c_id);
         orow->SetValue<uint64_t>(ORD::O_D_ID, d_id);
         orow->SetValue<uint64_t>(ORD::O_W_ID, w_id);
@@ -496,27 +441,25 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
         orow->SetValue<uint64_t>(ORD::O_CARRIER_ID, (o < 2101) ? rng.NextUniform(1, 10) : 0);
         orow->SetValue<uint64_t>(ORD::O_OL_CNT, ol_cnt);
         orow->SetValue<uint64_t>(ORD::O_ALL_LOCAL, 1);
-        InsertAndCommit(txn, t.order_tbl, orow);
+        orow->SetInternalKey(ORD::O_KEY, PackOrderKey(w_id, d_id, o));
+        t.order_tbl->InsertRow(orow, txn);
 
         // NEW-ORDER for last 900 orders
         if (o >= 2101) {
-            txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
             Row* norow = t.new_order->CreateNewRow();
             norow->SetValue<uint64_t>(NORD::NO_O_ID, o);
             norow->SetValue<uint64_t>(NORD::NO_D_ID, d_id);
             norow->SetValue<uint64_t>(NORD::NO_W_ID, w_id);
-            InsertAndCommit(txn, t.new_order, norow);
+            norow->SetInternalKey(NORD::NO_KEY, PackOrderKey(w_id, d_id, o));
+            t.new_order->InsertRow(norow, txn);
         }
 
         // ORDER-LINE rows
         for (uint64_t ol = 1; ol <= ol_cnt; ol++) {
-            txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
             Row* olrow = t.order_line->CreateNewRow();
-            olrow->SetValue<uint64_t>(ORDL::OL_O_ID, o);
+            olrow->SetValue<uint64_t>(ORDL::OL_I_ID, rng.NextUniform(1, ITEM_COUNT));
             olrow->SetValue<uint64_t>(ORDL::OL_D_ID, d_id);
             olrow->SetValue<uint64_t>(ORDL::OL_W_ID, w_id);
-            olrow->SetValue<uint64_t>(ORDL::OL_NUMBER, ol);
-            olrow->SetValue<uint64_t>(ORDL::OL_I_ID, rng.NextUniform(1, ITEM_COUNT));
             olrow->SetValue<uint64_t>(ORDL::OL_SUPPLY_W_ID, w_id);
             olrow->SetValue<int64_t>(ORDL::OL_DELIVERY_D, (o < 2101) ? now : 0);
             olrow->SetValue<uint64_t>(ORDL::OL_QUANTITY, 5);
@@ -524,19 +467,20 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
                 (o < 2101) ? 0.0 : (double)rng.NextUniform(1, 999999) / 100.0);
             char dist_info[25]; rng.RandomString(dist_info, 24, 24);
             SetStringValue(olrow, ORDL::OL_DIST_INFO, dist_info);
-            InsertAndCommit(txn, t.order_line, olrow);
+            olrow->SetInternalKey(ORDL::OL_KEY, PackOlKey(w_id, d_id, o, ol));
+            t.order_line->InsertRow(olrow, txn);
         }
     }
+    txn->Commit();
+    txn->EndTransaction();
 }
 
 static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t i = 1; i <= STOCK_PER_WARE; i++) {
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
         Row* row = t.stock->CreateNewRow();
-        if (!row) { txn->Rollback(); continue; }
-        row->SetValue<uint64_t>(STK::S_I_ID, i);
-        row->SetValue<uint64_t>(STK::S_W_ID, w_id);
+        if (!row) continue;
         row->SetValue<uint64_t>(STK::S_QUANTITY, rng.NextUniform(10, 100));
         char dist[25];
         for (int d = 0; d < 10; d++) {
@@ -552,9 +496,16 @@ static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRan
             memcpy(data + pos, "ORIGINAL", 8);
         }
         SetStringValue(row, STK::S_DATA, data);
-        InsertAndCommit(txn, t.stock, row);
+        row->SetInternalKey(STK::S_KEY, PackStockKey(w_id, i));
+        t.stock->InsertRow(row, txn);
     }
+    txn->Commit();
+    txn->EndTransaction();
 }
+
+// ======================================================================
+// Per-warehouse thread
+// ======================================================================
 
 struct PopulateArgs {
     MOTEngine*  engine;
