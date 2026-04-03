@@ -12,7 +12,6 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# Generated masstree config files
-third_party/masstree/config.h
+# Generated masstree config files (config.h is committed for standalone builds)
 third_party/masstree/config.h.in
 third_party/masstree/configure
