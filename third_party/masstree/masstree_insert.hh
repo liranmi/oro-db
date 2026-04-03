@@ -81,7 +81,7 @@ bool tcursor<P>::find_insert(threadinfo& ti, bool& found)
 
     // maybe we need a new layer
     if (kx_.p >= 0)
-        return !make_new_layer(ti);  // MOT: invert — original false=success
+        return make_new_layer(ti);
 
     // mark insertion if we are changing modification state
     if (unlikely(n_->modstate_ != leaf<P>::modstate_insert)) {
@@ -100,7 +100,7 @@ bool tcursor<P>::find_insert(threadinfo& ti, bool& found)
     }
 
     // otherwise must split
-    return !make_split(ti);  // MOT: invert — original false=success
+    return make_split(ti);
 }
 
 template <typename P>
