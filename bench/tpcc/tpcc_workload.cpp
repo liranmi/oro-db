@@ -377,8 +377,11 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     if (found) {
         uint64_t read_id;
         found->GetValue(WC2::V_ID, read_id);
-        fprintf(stderr, "VERIFY WH(%lu): OK  read_back_id=%lu\n",
-                (unsigned long)w_id, (unsigned long)read_id);
+        double read_ytd, read_tax;
+        found->GetValue(7, read_ytd);  // YTD = col 7
+        found->GetValue(6, read_tax);  // TAX = col 6
+        fprintf(stderr, "VERIFY WH(%lu): OK  id=%lu ytd=%.2f tax=%.4f\n",
+                (unsigned long)w_id, (unsigned long)read_id, read_ytd, read_tax);
     } else {
         fprintf(stderr, "VERIFY WH(%lu): FAIL lookup=NULL rc=%d\n",
                 (unsigned long)w_id, (int)vrc);
