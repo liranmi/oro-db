@@ -20,11 +20,18 @@ enum class YcsbProfile {
 
 enum class Distribution { UNIFORM, ZIPFIAN };
 
+// TPC-C execution mode
+enum class TpccMode {
+    MIXED,       // Full TPC-C mix (5 transaction types, Clause 5.2.3)
+    TWO_PHASE    // NewOrder + Payment only (DBx1000-style)
+};
+
 struct BenchConfig {
     // Common
     WorkloadType workload = WorkloadType::TPCC;
     uint32_t     threads  = 1;
     uint32_t     duration_sec = 10;
+    uint64_t     max_txns = 0;         // 0 = unlimited (time-based), >0 = stop after N total txns
     bool         json_output  = false;
     std::string  json_file;
     std::string  config_path;  // mot.conf path override
@@ -32,6 +39,7 @@ struct BenchConfig {
     // TPC-C
     uint32_t tpcc_warehouses   = 1;
     bool     tpcc_small_schema = false;
+    TpccMode tpcc_mode         = TpccMode::MIXED;
     double   tpcc_new_order_pct   = 0.45;
     double   tpcc_payment_pct     = 0.43;
     double   tpcc_order_status_pct = 0.04;

@@ -16,7 +16,8 @@ server. It provides:
 - **MassTree index** (trie of B+ trees) for ordered key-value access
 - **OCC transactions** with MVCC and CSN-based snapshot isolation
 - **Direct C++ API** for insert / select / update / delete
-- **Micro-benchmark harness** for performance testing
+- **TPC-C and YCSB benchmarks** for performance evaluation
+- **Comprehensive index test suite** (18 tests covering low-level and transactional APIs)
 
 ## Building
 
@@ -30,14 +31,42 @@ make -j$(nproc)
 
 | CMake Option | Default | Description |
 |---|---|---|
-| `ORO_BUILD_BENCH` | ON | Build the micro-benchmark |
+| `ORO_BUILD_BENCH` | ON | Build the benchmarks (micro-benchmark + TPC-C/YCSB) |
+| `ORO_BUILD_TESTS` | ON | Build the index test suite |
 | `ORO_WITH_NUMA` | OFF | Enable NUMA support (requires libnuma-dev) |
 
-## Running the benchmark
+## Running the benchmarks
+
+### Micro-benchmark
+
+Validates basic engine functionality (insert throughput):
 
 ```bash
-./oro_bench [num_rows] [num_threads]
-./oro_bench 100000 1
+./oro_micro_bench [num_rows] [num_threads]
+./oro_micro_bench 100000 1
+```
+
+### TPC-C
+
+Full TPC-C implementation with all 5 transaction types (NewOrder, Payment,
+Delivery, OrderStatus, StockLevel):
+
+```bash
+./oro_bench --workload tpcc --warehouses 4 --threads 8 --duration 30
+```
+
+### YCSB
+
+Supports profiles A–F (read-heavy, write-heavy, scan, read-modify-write, etc.):
+
+```bash
+./oro_bench --workload ycsb --profile A --records 1000000 --threads 16
+```
+
+### Index tests
+
+```bash
+./oro_test_index
 ```
 
 ## Project structure
@@ -47,36 +76,46 @@ oro-db/
 ├── CMakeLists.txt
 ├── README.md
 ├── bench/
-│   └── oro_bench.cpp          # Micro-benchmark harness
+│   ├── oro_bench.cpp              # Micro-benchmark (basic insert throughput)
+│   ├── main.cpp                   # Unified TPC-C / YCSB benchmark CLI
+│   ├── framework/                 # Benchmark infrastructure (config, stats, utils)
+│   ├── tpcc/                      # TPC-C workload (9 tables, 5 transactions)
+│   └── ycsb/                      # YCSB workload (profiles A–F)
 ├── config/
-│   └── mot.conf               # MOT configuration file
+│   └── mot.conf                   # MOT configuration file
+├── test/
+│   └── test_index.cpp             # Index test suite (low-level + transactional)
+├── third_party/
+│   └── masstree/                  # Bundled MassTree (openEuler-patched)
 └── src/
-    ├── mot_core/              # MOT core engine (from openGauss)
-    │   ├── concurrency_control/
-    │   ├── infra/
-    │   ├── memory/
-    │   ├── storage/
-    │   ├── system/
-    │   └── utils/
-    └── stubs/                 # Replacement headers for openGauss deps
+    ├── mot_core/                  # MOT core engine (from openGauss)
+    │   ├── concurrency_control/   # OCC transaction manager
+    │   ├── infra/                 # Config, containers, stats, synchronization
+    │   ├── memory/                # NUMA-aware allocation, garbage collector
+    │   ├── storage/               # Tables, rows, columns, indexes
+    │   ├── system/                # Engine, transactions, checkpoint, recovery
+    │   └── utils/                 # Helpers and logging
+    └── stubs/                     # Replacement headers for openGauss deps
         ├── postgres.h
         ├── securec.h
         ├── libintl.h
-        ├── knl/
-        │   ├── knl_thread.h
-        │   ├── knl_session.h
-        │   └── knl_instance.h
-        └── utils/
-            ├── elog.h
-            └── memutils.h
+        ├── oro_stubs.cpp          # Thread-local / global context setup
+        ├── oro_index_factory.cpp  # MassTree / StubIndex selection
+        ├── oro_stub_index.h       # std::map fallback when MassTree unavailable
+        ├── oro_masstree_adapter.cpp
+        ├── oro_recovery_stub.cpp
+        ├── knl/                   # Kernel context stubs
+        └── utils/                 # elog, memutils stubs
 ```
 
 ## Status
 
-**Work in progress.** The MOT core compiles standalone with stub headers
-replacing openGauss kernel dependencies. The MassTree index requires the
-external `libmasstree` library (from `kohler/masstree-beta` or the openGauss
-third-party build).
+The MOT core compiles standalone with stub headers replacing openGauss kernel
+dependencies. MassTree is bundled in `third_party/` (openEuler-patched
+`kohler/masstree-beta`). Without MassTree, the engine falls back to a
+mutex-guarded `std::map` index.
+
+All index tests pass (18/18). TPC-C and YCSB benchmarks are functional.
 
 ## License
 

@@ -51,11 +51,14 @@ static void PrintUsage(const char* prog)
     printf("Common options:\n");
     printf("  --threads N          Worker threads (default: 1)\n");
     printf("  --duration N         Benchmark duration in seconds (default: 10)\n");
+    printf("  --max-txns N         Stop after N total transactions (overrides --duration)\n");
     printf("  --json FILE          Write results to JSON file\n");
     printf("  --config FILE        Override mot.conf path\n");
     printf("\nTPC-C options:\n");
     printf("  --warehouses N       Number of warehouses (default: 1)\n");
     printf("  --small              Use reduced TPC-C schema\n");
+    printf("  -M                   Full TPC-C mix (default): 45%% NewOrder, 43%% Payment, etc.\n");
+    printf("  -Tp N                NewOrder/Payment only: N%% NewOrder, (100-N)%% Payment\n");
     printf("\nYCSB options:\n");
     printf("  --profile A|B|C|D|E|F   Workload profile (default: A)\n");
     printf("  --records N             Number of records (default: 1000000)\n");
@@ -95,6 +98,8 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
             cfg.threads = (uint32_t)atoi(argv[++i]);
         } else if (MatchArg(argv[i], "--duration") && i + 1 < argc) {
             cfg.duration_sec = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--max-txns") && i + 1 < argc) {
+            cfg.max_txns = (uint64_t)atol(argv[++i]);
         } else if (MatchArg(argv[i], "--json") && i + 1 < argc) {
             cfg.json_output = true;
             cfg.json_file = argv[++i];
@@ -105,6 +110,20 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
             cfg.tpcc_warehouses = (uint32_t)atoi(argv[++i]);
         } else if (MatchArg(argv[i], "--small")) {
             cfg.tpcc_small_schema = true;
+        } else if (MatchArg(argv[i], "-M")) {
+            cfg.tpcc_mode = oro::TpccMode::MIXED;
+        } else if (MatchArg(argv[i], "-Tp") && i + 1 < argc) {
+            int pct = atoi(argv[++i]);
+            if (pct < 0 || pct > 100) {
+                fprintf(stderr, "Error: -Tp percentage must be 0–100\n");
+                return false;
+            }
+            cfg.tpcc_mode = oro::TpccMode::TWO_PHASE;
+            cfg.tpcc_new_order_pct    = pct / 100.0;
+            cfg.tpcc_payment_pct      = 1.0 - cfg.tpcc_new_order_pct;
+            cfg.tpcc_order_status_pct = 0;
+            cfg.tpcc_delivery_pct     = 0;
+            cfg.tpcc_stock_level_pct  = 0;
         // YCSB flags
         } else if (MatchArg(argv[i], "--profile") && i + 1 < argc) {
             ++i;
@@ -192,10 +211,18 @@ int main(int argc, char* argv[])
     printf("=== oro-db benchmark ===\n");
     printf("  Workload:   %s\n", WorkloadName(cfg.workload));
     printf("  Threads:    %u\n", cfg.threads);
-    printf("  Duration:   %u sec\n", cfg.duration_sec);
+    if (cfg.max_txns > 0)
+        printf("  Max txns:   %lu\n", (unsigned long)cfg.max_txns);
+    else
+        printf("  Duration:   %u sec\n", cfg.duration_sec);
 
     if (cfg.workload == oro::WorkloadType::TPCC) {
         printf("  Warehouses: %u\n", cfg.tpcc_warehouses);
+        if (cfg.tpcc_mode == oro::TpccMode::TWO_PHASE)
+            printf("  Mode:       -Tp (%.0f%% NewOrder, %.0f%% Payment)\n",
+                   cfg.tpcc_new_order_pct * 100, cfg.tpcc_payment_pct * 100);
+        else
+            printf("  Mode:       -M (full TPC-C mix)\n");
         if (cfg.tpcc_small_schema)
             printf("  Schema:     small (reduced columns)\n");
     } else {
@@ -295,10 +322,15 @@ int main(int argc, char* argv[])
     ddl_session = nullptr;
 
     // --- Run benchmark ---
-    printf("[4] Running %s benchmark for %u seconds with %u threads...\n",
-           WorkloadName(cfg.workload), cfg.duration_sec, cfg.threads);
+    if (cfg.max_txns > 0)
+        printf("[4] Running %s benchmark for %lu txns with %u threads...\n",
+               WorkloadName(cfg.workload), (unsigned long)cfg.max_txns, cfg.threads);
+    else
+        printf("[4] Running %s benchmark for %u seconds with %u threads...\n",
+               WorkloadName(cfg.workload), cfg.duration_sec, cfg.threads);
 
     std::atomic<bool> running{true};
+    std::atomic<uint64_t> txns_remaining{cfg.max_txns};  // 0 = unlimited
     std::vector<oro::ThreadStats> all_stats(cfg.threads);
     std::vector<std::thread> workers;
     workers.reserve(cfg.threads);
@@ -322,6 +354,13 @@ int main(int argc, char* argv[])
                 uint32_t num_wh = cfg.tpcc_warehouses;
 
                 while (running.load(std::memory_order_relaxed)) {
+                    // Check transaction count limit
+                    if (cfg.max_txns > 0) {
+                        uint64_t rem = txns_remaining.load(std::memory_order_relaxed);
+                        if (rem == 0) break;
+                        txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                    }
+
                     auto txnType = oro::tpcc::PickTxnType(cfg, rng);
                     MOT::RC rc = MOT::RC_ABORT;
 
@@ -386,6 +425,12 @@ int main(int argc, char* argv[])
                 oro::ycsb::ZipfianGenerator  zipfian_gen(cfg.ycsb_record_count, cfg.ycsb_zipfian_theta);
 
                 while (running.load(std::memory_order_relaxed)) {
+                    if (cfg.max_txns > 0) {
+                        uint64_t rem = txns_remaining.load(std::memory_order_relaxed);
+                        if (rem == 0) break;
+                        txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                    }
+
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
                         txn, ycsb_tables, cfg.ycsb_profile,
                         cfg.ycsb_ops_per_txn,
@@ -403,13 +448,17 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Timer thread — shared by both workloads
-    {
+    // Termination: either by time or by transaction count
+    if (cfg.max_txns > 0) {
+        // Count-limited: just wait for workers to drain the counter
+        for (auto& w : workers)
+            w.join();
+    } else {
+        // Time-limited: timer thread signals stop
         std::thread timer([&]() {
             std::this_thread::sleep_for(std::chrono::seconds(cfg.duration_sec));
             running.store(false, std::memory_order_relaxed);
         });
-
         timer.join();
         for (auto& w : workers)
             w.join();
