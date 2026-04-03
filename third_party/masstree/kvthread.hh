@@ -24,21 +24,79 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <stdlib.h>
+#include <vector>
+
+enum {
+    MT_MERR_OK = 0,
+    // Errors that will cause operation failure. bad flows are handled
+    MT_MERR_MAKE_SPLIT_PRE_ALLOC = 1,
+    MT_MERR_MAKE_SPLIT_LEAF_ALLOC = 2,
+    MT_MERR_MAKE_NEW_LAYER_LEAF_ALLOC_1 = 3,
+    MT_MERR_MAKE_NEW_LAYER_LEAF_ALLOC_2 = 4,
+    MT_MERR_MAKE_NEW_LAYER_KSUFFIX_ALLOC_1 = 5,
+    MT_MERR_MAKE_NEW_LAYER_KSUFFIX_ALLOC_2 = 6,
+    MT_MERR_FIND_INSERT_ASSIGN_SUFFIX = 7,
+    MT_MERR_SPLIT_INTO_ASSIGN_INITALIZE_1 = 8,
+    MT_MERR_SPLIT_INTO_ASSIGN_INITALIZE_2 = 9,
+    MT_MERR_GC_LAYER_REMOVAL_MAKE = 10,
+    MT_MERR_MAKE_SPLIT_ASSIGN_SUFFIX = 11,
+    MT_MERR_MAKE_SPLIT_PERM_EXCHANGE = 12,
+
+    // Errors that are being handled internally (Operation should succeed even if last error contains them)
+    MT_MERR_NON_DISRUPTIVE_ERRORS = 15,
+    MT_MERR_MAKE_INTERNODE_USE_RESERVED = 16,
+    MT_MERR_MAKE_INTERNODE_USE_RESERVED_2 = 17,
+
+    // We should not reach the following errors as they should be covered with other errors in more upper layer
+    MT_MERR_NOT_RETURNED_TO_USER_ERRORS = 20,
+    MT_MERR_ASSIGN_KSUF = 21,
+    MT_MERR_MAKE_LEAF = 22,
+    MT_MERR_MAKE_ROOT_LEAF = 23,
+    MT_MERR_MAKE_INTERNODE = 24,
+    MT_MERR_LEAF_ASSIGN = 25,
+    MT_MERR_ASSIGN_INITALIZE_1 = 26,
+    MT_MERR_ASSIGN_INITALIZE_2 = 27,
+
+    // We should not reach the following errors
+    MT_MERR_UNREACHABLE_ERRORS = 30,
+    MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_NOT_EXPECTED,
+    MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_NOT_EXPECTED_2,
+    MT_MERR_MAKE_SPLIT_INTERNODE_ALLOC_EMPTY_PRE_ALLOC_NOT_EXPECTED,
+
+    MT_MERR_NOT_IN_USE_LAST_ENTRY = 40
+};
+
+#define MAX_ALLOC_ERROR_TYPES MT_MERR_NOT_IN_USE_LAST_ENTRY
+
 
 class threadinfo;
 class loginfo;
 
+extern __thread threadinfo * mtSessionThreadInfo;
+
 typedef uint64_t mrcu_epoch_type;
 typedef int64_t mrcu_signed_epoch_type;
 
-extern relaxed_atomic<mrcu_epoch_type> globalepoch;  // global epoch, updated regularly
-extern relaxed_atomic<mrcu_epoch_type> active_epoch;
+extern volatile mrcu_epoch_type globalepoch;  // global epoch, updated regularly
+extern volatile mrcu_epoch_type active_epoch;
 
-struct limbo_group {
+// Memtags max allocation size
+#define MAX_MEMTAG_MASSTREE_LEAF_ALLOCATION_SIZE        iceil(sizeof(leaf<P>) + 128, 64)
+#define MAX_MEMTAG_MASSTREE_INTERNODE_ALLOCATION_SIZE   sizeof(internode<P>)
+#define MAX_MEMTAG_MASSTREE_LIMBO_GROUP_ALLOCATION_SIZE sizeof(mt_limbo_group)
+
+// Upper bound for the ksuffixes structure max size.
+#define MAX_MEMTAG_MASSTREE_KSUFFIXES_ALLOCATION_SIZE(width) iceil_log2(leaf<P>::external_ksuf_type::safe_size(width, MASSTREE_MAXKEYLEN * width));
+
+inline uint64_t ng_getGlobalEpoch() {
+  return globalepoch;
+}
+
+typedef struct mt_limbo_group {
     typedef mrcu_epoch_type epoch_type;
     typedef mrcu_signed_epoch_type signed_epoch_type;
 
-    struct limbo_element {
+    struct mt_limbo_element {
         void* ptr_;
         union {
             memtag tag;
@@ -46,13 +104,13 @@ struct limbo_group {
         } u_;
     };
 
-    enum { capacity = (4076 - sizeof(epoch_type) - sizeof(limbo_group*)) / sizeof(limbo_element) };
+    enum { capacity = (4076 - sizeof(epoch_type) - sizeof(mt_limbo_group*)) / sizeof(mt_limbo_element) };
     unsigned head_;
     unsigned tail_;
     epoch_type epoch_;
-    limbo_group* next_;
-    limbo_element e_[capacity];
-    limbo_group()
+    mt_limbo_group* next_;
+    mt_limbo_element e_[capacity];
+    mt_limbo_group()
         : head_(0), tail_(0), next_() {
     }
     epoch_type first_epoch() const {
@@ -72,10 +130,7 @@ struct limbo_group {
         ++tail_;
     }
     inline unsigned clean_until(threadinfo& ti, mrcu_epoch_type epoch_bound, unsigned count);
-};
-
-// MOT: alias used by mot_masstree_kvthread.cpp
-typedef limbo_group mt_limbo_group;
+} mt_limbo_group;
 
 template <int N> struct has_threadcounter {
     static bool test(threadcounter ci) {
@@ -91,16 +146,21 @@ template <> struct has_threadcounter<0> {
 struct mrcu_callback {
     virtual ~mrcu_callback() {
     }
+    virtual size_t operator()(bool drop_index) = 0;
     virtual void operator()(threadinfo& ti) = 0;
-    // MOT: callback with drop_index flag, returns allocation size
-    virtual size_t operator()(bool) { return 0; }
 };
 
-class threadinfo {
+class alignas(64) threadinfo {
   public:
     enum {
         TI_MAIN, TI_PROCESS, TI_LOG, TI_CHECKPOINT
     };
+
+    typedef struct rcu_entry {
+        void* p;
+        size_t sz;
+        memtag tag;
+    } rcu_entry_t;
 
     static threadinfo* allthreads;
 
@@ -108,9 +168,7 @@ class threadinfo {
         return next_;
     }
 
-    static threadinfo* make(int purpose, int index);
-    // MOT: overload used by mot_masstree_kvthread.cpp
-    static threadinfo* make(void* obj_mem, int purpose, int index, int rcu_max_free_count);
+    static threadinfo* make(void * obj_mem, int purpose, int index, int rcu_max_free_count = 0);
     // XXX destructor
 
     // thread information
@@ -209,42 +267,33 @@ class threadinfo {
     }
 
     // memory allocation
-    void* allocate(size_t sz, memtag tag) {
-        void* p = malloc(sz + memdebug_size);
-        p = memdebug::make(p, sz, tag);
-        if (p)
-            mark(threadcounter(tc_alloc + (tag > memtag_value)), sz);
-        return p;
-    }
-    // MOT: overload with actual_size output
-    void* allocate(size_t sz, memtag tag, size_t* actual_size) {
-        void* p = allocate(sz, tag);
-        if (p && actual_size)
-            *actual_size = sz;
-        return p;
-    }
-    void deallocate(void* p, size_t sz, memtag tag) {
-        // in C++ allocators, 'p' must be nonnull
-        assert(p);
-        p = memdebug::check_free(p, sz, tag);
-        free(p);
-        mark(threadcounter(tc_alloc + (tag > memtag_value)), -sz);
-    }
+    void* allocate(size_t sz, memtag tag, size_t * actual_size = NULL);
+
+    // memory deallocation
+    void deallocate(void* p, size_t sz, memtag tag);
+
     void deallocate_rcu(void* p, size_t sz, memtag tag) {
         assert(p);
-        memdebug::check_rcu(p, sz, tag);
-        record_rcu(p, tag);
-        mark(threadcounter(tc_alloc + (tag > memtag_value)), -sz);
+        dealloc_rcu.push_back({p, sz, tag});
     }
 
     void* pool_allocate(size_t sz, memtag tag) {
+        void* p = NULL;
         int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
-        assert(nl <= pool_max_nlines);
-        if (unlikely(!pool_[nl - 1]))
-            refill_pool(nl);
-        void* p = pool_[nl - 1];
-        if (p) {
-            pool_[nl - 1] = *reinterpret_cast<void **>(p);
+        if (use_pool()) {
+            masstree_invariant(false); // internal memory pool is currently disabled
+            assert(nl <= pool_max_nlines);
+            if (unlikely(!pool_[nl - 1]))
+                refill_pool(nl);
+            p = pool_[nl - 1];
+            if (p) {
+                pool_[nl - 1] = *reinterpret_cast<void **> (p);
+                p = memdebug::make(p, sz, memtag(tag + nl));
+                mark(threadcounter(tc_alloc + (tag > memtag_value)),
+                    nl * CACHE_LINE_SIZE);
+            }
+        } else {
+            p = allocate(sz, tag);
             p = memdebug::make(p, sz, memtag(tag + nl));
             mark(threadcounter(tc_alloc + (tag > memtag_value)),
                  nl * CACHE_LINE_SIZE);
@@ -256,46 +305,57 @@ class threadinfo {
         assert(p && nl <= pool_max_nlines);
         p = memdebug::check_free(p, sz, memtag(tag + nl));
         if (use_pool()) {
+            masstree_invariant(false); // internal memory pool is currently disabled
             *reinterpret_cast<void **>(p) = pool_[nl - 1];
             pool_[nl - 1] = p;
         } else
-            free(p);
+            deallocate(p, sz, tag); // external memory pool deallocation
         mark(threadcounter(tc_alloc + (tag > memtag_value)),
              -nl * CACHE_LINE_SIZE);
     }
     void pool_deallocate_rcu(void* p, size_t sz, memtag tag) {
-        int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
-        assert(p && nl <= pool_max_nlines);
-        memdebug::check_rcu(p, sz, memtag(tag + nl));
-        record_rcu(p, memtag(tag + nl));
-        mark(threadcounter(tc_alloc + (tag > memtag_value)),
-             -nl * CACHE_LINE_SIZE);
+        if (unlikely(use_pool())) {
+          int nl = (sz + memdebug_size + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
+          assert(p && nl <= pool_max_nlines);
+          memdebug::check_rcu(p, sz, memtag(tag + nl));
+          mark(threadcounter(tc_alloc + (tag > memtag_value)),
+               -nl * CACHE_LINE_SIZE);
+          dealloc_rcu.push_back({p, sz, memtag(tag + nl)});
+        } else {
+          dealloc_rcu.push_back({p, sz, tag});
+        }
+    }
+
+    void add_nodes_to_gc() {
+        for (uint32_t i = 0 ; i < dealloc_rcu.size() ; i++) {
+            masstree_invariant(dealloc_rcu[i].p);
+            record_rcu(dealloc_rcu[i].p, dealloc_rcu[i].sz, dealloc_rcu[i].tag);
+            dealloc_rcu[i].p = nullptr;
+        }
+        dealloc_rcu.clear();
     }
 
     // RCU
-    enum { rcu_free_count = 128 }; // max # of entries to free per rcu_quiesce() call
     void rcu_start() {
-        auto ge = globalepoch.load();
-        if (gc_epoch_ != ge)
-            gc_epoch_ = ge;
+        if (gc_epoch_ != ng_getGlobalEpoch())
+            gc_epoch_ = ng_getGlobalEpoch();
+    }
+    void rcu_end() {
+        gc_epoch_ = 0;
     }
     void rcu_stop() {
-        if (perform_gc_epoch_ != active_epoch.load())
+        if (perform_gc_epoch_ != active_epoch)
             hard_rcu_quiesce();
         gc_epoch_ = 0;
     }
     void rcu_quiesce() {
         rcu_start();
-        if (perform_gc_epoch_ != active_epoch.load())
+        if (perform_gc_epoch_ != active_epoch)
             hard_rcu_quiesce();
     }
     typedef ::mrcu_callback mrcu_callback;
-    void rcu_register(mrcu_callback* cb) {
-        record_rcu(cb, memtag(-1));
-    }
-    // MOT: overload with size parameter
-    void rcu_register(mrcu_callback* cb, size_t) {
-        record_rcu(cb, memtag(-1));
+    void rcu_register(mrcu_callback* cb, size_t size) {
+        record_rcu(cb, size, memtag_masstree_gc);
     }
 
     // thread management
@@ -306,32 +366,44 @@ class threadinfo {
         return pthreadid_;
     }
 
+    inline void set_last_error(int error) { masstree_invariant(error < MT_MERR_UNREACHABLE_ERRORS); last_error = error; }
+    inline int get_last_error() { return last_error; }
+    inline bool non_disruptive_error() { return last_error == 0 ||
+                                     (last_error > MT_MERR_NON_DISRUPTIVE_ERRORS && last_error < MT_MERR_NOT_RETURNED_TO_USER_ERRORS); }
+
     void report_rcu(void* ptr) const;
     static void report_rcu_all(void* ptr);
     static inline mrcu_epoch_type min_active_epoch();
 
-    // MOT extensions
-    void set_gc_session(void* s) { gc_session_ = s; }
-    void* get_gc_session() { return gc_session_; }
-    void set_working_index(void* idx) { cur_working_index = idx; }
-    void* get_working_index() { return cur_working_index; }
-    bool non_disruptive_error() const { return !last_error_; }
-    void set_last_error(int err) { last_error_ = err; }
-    void add_nodes_to_gc() { /* no-op in standalone: GC handled by MOT */ }
-    // MOT: delayed RCU recording — delegate to deallocate_rcu
-    void ng_record_rcu(void* p, int sz, memtag tag) {
-        memdebug::check_rcu(p, sz, tag);
-        record_rcu(p, tag);
+    void set_rcu_free_count(int rcu_count) { rcu_free_count = rcu_count; }
+    int get_rcu_free_count() { return rcu_free_count; }
+
+    void set_gc_session(void * gc_session);
+    void * get_gc_session();
+
+    inline uint32_t get_occupied_elements() { return total_limbo_inuse_elements; }
+
+    void set_working_index (void * index) { cur_working_index = index; }
+    void * get_working_index () { return cur_working_index; }
+
+    // This function is now used to defer between Masstree internal memory pool (use_pool == true) vs external memory pool (use_pool == false)
+    // Masstree internal memory pool is currently disabled
+    static bool use_pool() {
+#if ENABLE_ASSERTIONS
+        return !no_pool_value;
+#else
+        return false;
+#endif
     }
 
-    void* gc_session_ = nullptr;
-    void* cur_working_index = nullptr;
-    int last_error_ = 0;
-
-    // MOT: dummy dealloc_rcu for assertion in mot_masstree_kvthread.cpp destructor
-    struct { size_t size() const { return 0; } } dealloc_rcu;
+    bool is_empty_rcu_array() {
+        return dealloc_rcu.size() == 0;
+    }
 
   private:
+    void * cur_working_index;
+    int last_error = MT_MERR_OK;
+    std::vector<struct rcu_entry> dealloc_rcu;
     union {
         struct {
             mrcu_epoch_type gc_epoch_;
@@ -350,17 +422,21 @@ class threadinfo {
 
     enum { pool_max_nlines = 20 };
     void* pool_[pool_max_nlines];
+    int rcu_free_count;
+    mt_limbo_group* limbo_head_;
+    mt_limbo_group* limbo_tail_;
+    void * gc_session_;
+    uint32_t total_limbo_inuse_elements;
 
-    limbo_group* limbo_head_;
-    limbo_group* limbo_tail_;
     mutable kvtimestamp_t ts_;
 
     //enum { ncounters = (int) tc_max };
     enum { ncounters = 0 };
     uint64_t counters_[ncounters];
+    uint64_t insertions_ = 0;
 
-    void refill_pool(int nl);
-    void refill_rcu();
+    void refill_pool(int nl) { assert(0); }
+    void refill_rcu() { assert(0); }
 
     void free_rcu(void *p, memtag tag) {
         if ((tag & memtag_pool_mask) == 0) {
@@ -376,26 +452,25 @@ class threadinfo {
         }
     }
 
-    void record_rcu(void* ptr, memtag tag) {
+    void ng_record_rcu(void* ptr, int size, memtag tag);
+
+    void record_rcu(void* ptr, int size, memtag tag) {
+      if (unlikely(use_pool())) {
+        masstree_invariant(false); // internal memory pool is currently disabled
         if (limbo_tail_->tail_ + 2 > limbo_tail_->capacity)
-            refill_rcu();
-        auto epoch = globalepoch.load();
+          refill_rcu();
+        uint64_t epoch = ng_getGlobalEpoch();
         limbo_tail_->push_back(ptr, tag, epoch);
+        ++total_limbo_inuse_elements;
+      } else {
+        ng_record_rcu(ptr, size, tag);
+      }
     }
 
 #if ENABLE_ASSERTIONS
     static int no_pool_value;
 #endif
-    static bool use_pool() {
-#if ENABLE_ASSERTIONS
-        return !no_pool_value;
-#else
-        return true;
-#endif
-    }
 
-    inline threadinfo(int purpose, int index);
-    // MOT: 3-param constructor used by mot_masstree_kvthread.cpp
     inline threadinfo(int purpose, int index, int rcu_max_free_count);
     threadinfo(const threadinfo&) = delete;
     ~threadinfo() {}
@@ -403,11 +478,11 @@ class threadinfo {
 
     void hard_rcu_quiesce();
 
-    friend struct limbo_group;
+    friend struct mt_limbo_group;
 };
 
 inline mrcu_epoch_type threadinfo::min_active_epoch() {
-    auto ae = globalepoch.load();
+    mrcu_epoch_type ae = ng_getGlobalEpoch();
     for (threadinfo* ti = allthreads; ti; ti = ti->next()) {
         prefetch((const void*) ti->next());
         mrcu_epoch_type te = ti->gc_epoch_;

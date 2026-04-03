@@ -19,11 +19,6 @@
 #include <assert.h>
 #include <stdarg.h>
 #include "string.hh"
-#if __GNUC__ > 4
-# define LCDF_SNPRINTF_ATTR __attribute__((__format__(__printf__, 3, 4)))
-#else
-# define LCDF_SNPRINTF_ATTR /* nothing */
-#endif
 namespace lcdf {
 
 /** @file <lcdf/straccum.hh>
@@ -121,7 +116,7 @@ class StringAccum { public:
     void append_break_lines(const String& text, int linelen, const String& leftmargin = String());
 
     StringAccum& snprintf(int n, const char* format, ...) LCDF_SNPRINTF_ATTR;
-    StringAccum& vsnprintf(int n, const char* format, va_list val);
+    StringAccum& vsnprintf(int n, const char* format, va_list val) LCDF_VSNPRINTF_ATTR;
 
     String take_string();
 
@@ -724,5 +719,4 @@ inline void swap(StringAccum& a, StringAccum& b) {
 }
 
 } // namespace lcdf
-#undef LCDF_SNPRINTF_ATTR
 #endif

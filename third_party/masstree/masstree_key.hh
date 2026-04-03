@@ -182,12 +182,11 @@ class key {
     int prefix_length() const {
         return s_ - first_;
     }
+    int full_length() const {
+        return s_ - first_ + len_;
+    }
     Str full_string() const {
         return Str(first_, s_ + len_);
-    }
-    // MOT: total key length including prefix
-    int full_length() const {
-        return (s_ - first_) + len_;
     }
     operator Str() const {
         return full_string();
@@ -214,6 +213,12 @@ class key {
     void assign_store_length(int len) {
         len_ = len;
     }
+
+    /* We know that the len_ after the unshift is at least 9 because:
+         1. Before the unshift, len >=1
+         2. Unshift size is 8
+       As we didn't find the search key in the current layer, we are going to search for the unshift version of it in the upper layer. It means that the rest of the key can be ignored,because
+        the version key that will be found is our target key */
     void unshift() {
         masstree_precondition(is_shifted());
         s_ -= ikey_size;

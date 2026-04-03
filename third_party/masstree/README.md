@@ -1,3 +1,5 @@
+# Notice: This project has been migrated to [AtomGit](https://atomgit.com/openeuler/masstree)
+# 通知: 本项目已经正式迁移至 [AtomGit](https://atomgit.com/openeuler/masstree) 平台
 Masstree
 ========
 

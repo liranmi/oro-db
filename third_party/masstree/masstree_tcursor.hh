@@ -20,6 +20,7 @@
 #include "masstree_struct.hh"
 namespace Masstree {
 template <typename P> struct gc_layer_rcu_callback;
+template <typename P> struct gc_layer_rcu_callback_ng;
 
 template <typename P>
 class unlocked_tcursor {
@@ -105,22 +106,23 @@ class tcursor {
     static constexpr int new_nodes_size = 1; // unless we make a new trie newnodes will have at most 1 item
     typedef small_vector<std::pair<leaf_type*, nodeversion_value_type>, new_nodes_size> new_nodes_type;
 
+#ifndef MASSTREE_OBSOLETE_CODE
     tcursor(basic_table<P>& table, Str str)
         : ka_(str), root_(table.fix_root()) {
     }
     tcursor(basic_table<P>& table, const char* s, int len)
         : ka_(s, len), root_(table.fix_root()) {
     }
-    tcursor(basic_table<P>& table, const unsigned char* s, int len)
-        : ka_(reinterpret_cast<const char*>(s), len), root_(table.fix_root()) {
-    }
-    tcursor(node_base<P>* root, const char* s, int len)
-        : ka_(s, len), root_(root) {
-    }
     tcursor(node_base<P>* root, const unsigned char* s, int len)
         : ka_(reinterpret_cast<const char*>(s), len), root_(root) {
     }
-
+#endif
+    tcursor(basic_table<P>& table, const unsigned char* s, int len)
+        : ka_(reinterpret_cast<const char*>(s), len), root_(table.fix_root()), root_ref_(table.root_ref()) {
+    }
+    tcursor(node_base<P>** root_ref, const char* s, int len)
+        : ka_(s, len), root_(*root_ref), root_ref_(root_ref) {
+    }
     inline bool has_value() const {
         return kx_.p >= 0;
     }
@@ -147,15 +149,13 @@ class tcursor {
     inline nodeversion_value_type updated_version_value() const {
         return updated_v_;
     }
-
+#ifndef MASSTREE_OBSOLETE_CODE
     inline const new_nodes_type &new_nodes() const {
         return new_nodes_;
     }
-
+#endif
     inline bool find_locked(threadinfo& ti);
-    inline bool find_insert(threadinfo& ti);
-    // MOT: overload with 'found' output parameter
-    inline bool find_insert(threadinfo& ti, bool& found);
+    inline bool find_insert(threadinfo& ti, bool & found);
 
     inline void finish(int answer, threadinfo& ti);
 
@@ -167,13 +167,16 @@ class tcursor {
     key_type ka_;
     key_indexed_position kx_;
     node_base<P>* root_;
+    node_base<P>** root_ref_;
     int state_;
 
-    leaf_type* original_n_;
+    leaf_type* original_n_ = nullptr;
     nodeversion_value_type original_v_;
     nodeversion_value_type updated_v_;
-    new_nodes_type new_nodes_;
 
+#ifndef MASSTREE_OBSOLETE_CODE
+    new_nodes_type new_nodes_;
+#endif
     inline node_type* reset_retry() {
         ka_.unshift_all();
         return root_;
@@ -181,6 +184,7 @@ class tcursor {
 
     bool make_new_layer(threadinfo& ti);
     bool make_split(threadinfo& ti);
+    void release_internodes(internode_type * internodes_array[], int start, int end, threadinfo& ti);
     friend class leaf<P>;
     inline void finish_insert();
     inline bool finish_remove(threadinfo& ti);
@@ -192,11 +196,12 @@ class tcursor {
      *   If removing a leaf in layer 0, @a prefix is empty.
      *   If removing, for example, the node containing key "01234567ABCDEF" in the layer-1 tree
      *   rooted at "01234567", then @a prefix should equal "01234567". */
-    static bool remove_leaf(leaf_type* leaf, node_type* root,
+    static bool remove_leaf(leaf_type* leaf, node_type** root_ref,
                             Str prefix, threadinfo& ti);
 
     bool gc_layer(threadinfo& ti);
     friend struct gc_layer_rcu_callback<P>;
+    friend struct gc_layer_rcu_callback_ng<P>;
 };
 
 template <typename P>

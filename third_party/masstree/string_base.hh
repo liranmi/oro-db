@@ -26,6 +26,14 @@ namespace lcdf {
 class StringAccum;
 #define LCDF_CONSTANT_CSTR(cstr) ((cstr) && __builtin_constant_p(strlen((cstr))))
 
+#if __GNUC__ > 4
+# define LCDF_SNPRINTF_ATTR  __attribute__((__format__(__printf__, 3, 4)))
+# define LCDF_VSNPRINTF_ATTR __attribute__((__format__(__printf__, 3, 0)))
+#else
+# define LCDF_SNPRINTF_ATTR  /* nothing */
+# define LCDF_VSNPRINTF_ATTR /* nothing */
+#endif
+
 class String_generic {
   public:
     static const char empty_data[1];
@@ -506,7 +514,8 @@ inline typename T::substring_type String_generic::trim(const T &str) {
 
 #if HAVE_STD_HASH
 # define LCDF_MAKE_STRING_HASH(type) \
-    namespace std { template <> struct hash<type> {        \
+    namespace std { template <> struct hash<type>          \
+        : public unary_function<const type&, size_t> {     \
         size_t operator()(const type& x) const noexcept {  \
             return x.hashcode();                           \
         } }; }

@@ -46,6 +46,8 @@ class nodeversion {
         acquire_fence();
         return x;
     }
+
+    // Spin while node is in dirty state
     template <typename SF>
     nodeversion<P> stable_annotated(SF spin_function) const {
         value_type x = v_;
@@ -133,8 +135,10 @@ class nodeversion {
         masstree_invariant((fence(), x.v_ == v_));
         masstree_invariant(x.v_ & P::lock_bit);
         if (x.v_ & P::splitting_bit)
+            // Increasing the vsplit version counter, clean all lower bits (inserting, splitting, lock ...) and zeroing the vinsert version counter
             x.v_ = (x.v_ + P::vsplit_lowbit) & P::split_unlock_mask;
         else
+            // Clean all lower bits (inserting, splitting, lock ...). If P::inserting_bit == 1, also increasing the vinsert version counter
             x.v_ = (x.v_ + ((x.v_ & P::inserting_bit) << 2)) & P::unlock_mask;
         release_fence();
         v_ = x.v_;

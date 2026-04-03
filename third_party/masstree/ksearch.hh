@@ -60,6 +60,7 @@ inline int key_upper_bound(const KA& ka, const T& n)
     return key_upper_bound_by(ka, n, key_comparator<KA, T>());
 }
 
+// Binary search
 template <typename KA, typename T, typename F>
 key_indexed_position key_lower_bound_by(const KA& ka, const T& n, F comparator)
 {
@@ -85,7 +86,16 @@ inline key_indexed_position key_lower_bound(const KA& ka, const T& n)
     return key_lower_bound_by(ka, n, key_comparator<KA, T>());
 }
 
+/* For internode internal search:
+   Return the index of the child (leaf) that might contain the provided ikey (ka)
+   This is done be linear searching for the ikey that the provided ikey is the tightest upper boundary of (provided ikey is larger than the ikey in boundary array)
+   e.g. internode - boundary ikeys array: ikey0_ = {40, 50, 100, 110} children in indexes 0, 1, 2, 3, 4
+        For ka.ikey0_ == 100, 3 is returned because node in child_[3] might contain the ikey
+        For ka.ikey0_ == 150, 4 is returned
+        For ka.ikey0_ == 10, 0 is returned
+        For ka.ikey0_ == 50, 2 is returned */
 
+// Linear search
 template <typename KA, typename T, typename F>
 int key_find_upper_bound_by(const KA& ka, const T& n, F comparator)
 {
@@ -102,6 +112,19 @@ int key_find_upper_bound_by(const KA& ka, const T& n, F comparator)
     return l;
 }
 
+/* In use in leafs for permutation search
+   Find the ikey in node which equal or that the provided ikey is the tightest lower boundary of (provided ikey is smaller than the ikey in node). If match, also compare the keylen
+   Return value: key_indexed_position which contains i and p variables
+   i - Index inside the permutation. if key was found, index of the key
+        If key was not found, index of the ikey which is tightest lower bounded by the provided key (ka)
+        If no such exists, return perm.size() (invalid\not used location - currently outsize of the permutation)
+   p - Position in child arrays ( == permutation[i]). if key was not found, p = -1
+   e.g. Leaf - ikeys, perm { 0, 3, 1, 2 } ikey0_ = {40, 100, 110, 50}
+        For ka.ikey0_ == 100, 110 is returned (ikey0_[2] == 110) --> i = 2, p = 3
+        For ka.ikey0_ == 120, -1 is returned --> i = 4, p = -1
+        For ka.ikey0_ == 85,  -1 is returned --> i = 1, p = -1 */
+
+// Linear search
 template <typename KA, typename T, typename F>
 key_indexed_position key_find_lower_bound_by(const KA& ka, const T& n, F comparator)
 {

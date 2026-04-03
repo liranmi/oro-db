@@ -1,7 +1,7 @@
 /* Masstree
  * Eddie Kohler, Yandong Mao, Robert Morris
- * Copyright (c) 2012-2013 President and Fellows of Harvard College
- * Copyright (c) 2012-2013 Massachusetts Institute of Technology
+ * Copyright (c) 2012-2016 President and Fellows of Harvard College
+ * Copyright (c) 2012-2016 Massachusetts Institute of Technology
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -13,18 +13,26 @@
  * notice is a summary of the Masstree LICENSE file; the license in that file
  * is legally binding.
  */
-#include "checkpoint.hh"
 
-// add one key/value to a checkpoint.
-// called by checkpoint_tree() for each node.
-bool ckstate::visit_value(Str key, const row_type* value, threadinfo&) {
-    if (endkey && key >= endkey)
-        return false;
-    if (!row_is_marker(value)) {
-        msgpack::unparser<kvout> up(*vals);
-        up.write(key).write_wide(value->timestamp());
-        value->checkpoint_write(up);
-        ++count;
-    }
-    return true;
-}
+#include "kvthread.hh"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <new>
+#include <sys/mman.h>
+#if HAVE_SUPERPAGE && !NOSUPERPAGE
+#include <sys/types.h>
+#include <dirent.h>
+#endif
+
+//volatile mrcu_epoch_type active_epoch;
+
+//threadinfo *threadinfo::allthreads;
+
+
+#if ENABLE_ASSERTIONS
+int threadinfo::no_pool_value;
+#endif
+
+
+

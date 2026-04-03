@@ -17,6 +17,8 @@
 #define MASSTREE_GET_HH
 #include "masstree_tcursor.hh"
 #include "masstree_key.hh"
+#include "masstree_remove.hh"
+
 namespace Masstree {
 
 template <typename P>
@@ -86,29 +88,39 @@ bool tcursor<P>::find_locked(threadinfo& ti)
     fence();
     kx_ = leaf<P>::bound_type::lower(ka_, *n_);
     if (kx_.p >= 0) {
+        // Key slice (ikey) was found and it is stored in kx_.i
         leafvalue<P> lv = n_->lv_[kx_.p];
         lv.prefetch(n_->keylenx_[kx_.p]);
         state_ = n_->ksuf_matches(kx_.p, ka_);
+         // lv.layer() should be the root of the lower layer but might not be the root anymore. This case handled later in "else if (unlikely(state_ < 0)) {"
         if (state_ < 0 && !n_->has_changed(v) && lv.layer()->is_root()) {
+            // Going down to lower layer as the ikey in this layer matches. --> The full key prefix matches (not only this slice) while suffixes don't match
+            // (-state_) == the size of the ikey (in our case, 8 bytes)
             ka_.shift_by(-state_);
+            // Change the current cursor root to point to the root of the lower layer and continue the search for the key from there
             root = lv.layer();
             goto retry;
         }
     } else
         state_ = 0;
 
+    // n_ now points to the leaf where the key exists or should be added
     n_->lock(v, ti.lock_fence(tc_leaf_lock));
     if (n_->has_changed(v) || n_->permutation() != perm) {
         ti.mark(threadcounter(tc_stable_leaf_insert + n_->simple_has_split(v)));
         n_->unlock();
+        // If the node has split, look for the leaf that should hold the key (if exists) by traversing between the leaves in the same layer (using next pointer)
         n_ = n_->advance_to_key(ka_, v, ti);
         goto forward;
     } else if (unlikely(state_ < 0)) {
+        // n_->lv_[kx_.p] is a node in lower layer and should be a root but it is not anymore. It means that it already has a parent in lower layer. So the value is replaced with the lower layer node's parent.
+        // The right thing to do was to replace value with the root of the lower layer. instead, it is done in iterations (level by level)
         ka_.shift_by(-state_);
         n_->lv_[kx_.p] = root = n_->lv_[kx_.p].layer()->maybe_parent();
         n_->unlock();
         goto retry;
     } else if (unlikely(n_->deleted_layer())) {
+        // Layer was deleted. restart scan from table's root.
         ka_.unshift_all();
         root = const_cast<node_base<P>*>(root_);
         n_->unlock();

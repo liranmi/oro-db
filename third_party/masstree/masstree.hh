@@ -18,14 +18,12 @@
 #include "compiler.hh"
 #include "str.hh"
 #include "ksearch.hh"
-#include "mtcounters.hh"  // MOT: needed for memtag enum in basic_table::getMemtagMaxSize
-#include <string>          // MOT: for basic_table::name_
-
-namespace MOT { class Logger; }  // MOT: forward declaration for basic_table logger
+#include "kvthread.hh"
 
 namespace Masstree {
 using lcdf::Str;
 using lcdf::String;
+typedef void (*destroy_value_cb_func)(void *);
 
 class key_unparse_printable_string;
 template <typename T> class value_print;
@@ -35,11 +33,11 @@ template <int LW = 15, int IW = LW> struct nodeparams {
     static constexpr int internode_width = IW;
     static constexpr bool concurrent = true;
     static constexpr bool prefetch = true;
-    static constexpr int bound_method = bound_method_binary;
+    static constexpr int bound_method = bound_method_fast;
     static constexpr int debug_level = 0;
     typedef uint64_t ikey_type;
-    typedef uint32_t nodeversion_value_type;
-    static constexpr bool need_phantom_epoch = true;
+    typedef uint64_t nodeversion_value_type;
+    static constexpr bool need_phantom_epoch = false;
     typedef uint64_t phantom_epoch_type;
     static constexpr ssize_t print_max_indent_depth = 12;
     typedef key_unparse_printable_string key_unparse_type;
@@ -58,7 +56,6 @@ template <typename P> class basic_table;
 template <typename P> class unlocked_tcursor;
 template <typename P> class tcursor;
 
-// Forward declarations for MOT iterator types
 template <bool CONST_ITERATOR, bool FORWARD, typename P> class MasstreeIterator;
 
 template <typename P>
@@ -71,13 +68,18 @@ class basic_table {
     typedef typename P::threadinfo_type threadinfo;
     typedef unlocked_tcursor<P> unlocked_cursor_type;
     typedef tcursor<P> cursor_type;
-
-    // MOT iterator typedefs
     typedef MasstreeIterator<false, true, P> ForwardIterator;
     typedef MasstreeIterator<false, false, P> ReverseIterator;
 
-    // MOT destroy callback type
-    typedef void (*destroy_value_cb_func)(void*);
+    void find(const uint8_t* key, const uint32_t key_len, void*& output, bool& result, const uint32_t& pid) const;
+
+    void iteratorScan(const char * keybuf, uint32_t keylen, const bool& matchKey, void* const& it, const bool& forwardDirection,
+                      bool& result, const uint32_t& pid);
+
+    void *insert(const uint8_t* key, const uint32_t key_len, void* const& entry, bool& result, const uint32_t& pid);
+    void *remove(uint8_t const *const &key, uint32_t length, bool &result, const uint32_t &pid);
+    bool init(const uint16_t keyLength, const std::string& name, destroy_value_cb_func destroyValue_CB = NULL);
+    int getMemtagMaxSize(enum memtag tag);
 
     inline basic_table();
 
@@ -86,8 +88,6 @@ class basic_table {
 
     inline node_type* root() const;
     inline node_type* fix_root();
-
-    // MOT: accessor for root pointer (used by ReInitIndex)
     inline node_type** root_ref() { return &root_; }
 
     bool get(Str key, value_type& value, threadinfo& ti) const;
@@ -99,28 +99,15 @@ class basic_table {
 
     inline void print(FILE* f = 0) const;
 
-    // --- MOT extensions ---
-    // Implemented in mot_masstree.hpp, mot_masstree_insert.hpp, etc.
-    bool init(uint16_t keyLength, const std::string& name, destroy_value_cb_func destroyValue_CB = nullptr);
-    void find(const uint8_t* key, uint32_t key_len, void*& output, bool& found, const uint32_t& pid) const;
-    void* insert(const uint8_t* key, uint32_t key_len, void* const& entry, bool& result, const uint32_t& pid);
-    void* remove(uint8_t const* const& key, uint32_t length, bool& result, const uint32_t& pid);
-    void iteratorScan(const char* keybuf, uint32_t keylen, const bool& matchKey, void* const& it,
-                      const bool& forwardDirection, bool& result, const uint32_t& pid);
-    int getMemtagMaxSize(enum memtag tag);
-
-    // MOT members
-    uint16_t keyLength_;
-    std::string name_;
-    destroy_value_cb_func destroyValue_CB_;
-
-    // MOT: logger for IMPLEMENT_TEMPLATE_LOGGER
-    static MOT::Logger _logger;
-
-  // MOT: root_ made public for MasstreeIterator access
-    node_type* root_;
-
   private:
+    node_type* root_;
+    uint16_t keyLength_ = 0;
+    std::string name_;
+    destroy_value_cb_func destroyValue_CB_ = nullptr;
+
+    template<typename H, typename F>
+    int scan(H helper, void const *const &firstKey, unsigned int firstKeyLen,
+             bool matchFirstKey, F &scanner, threadinfo &ti) const;
 
     template <typename H, typename F>
     int scan(H helper, Str firstkey, bool matchfirst,
@@ -128,6 +115,13 @@ class basic_table {
 
     friend class unlocked_tcursor<P>;
     friend class tcursor<P>;
+
+    friend class MasstreeIterator<true, true, P>;
+    friend class MasstreeIterator<true, false, P>;
+    friend class MasstreeIterator<false, true, P>;
+    friend class MasstreeIterator<false, false, P>;
+
+    DECLARE_CLASS_LOGGER()
 };
 
 } // namespace Masstree

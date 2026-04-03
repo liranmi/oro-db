@@ -266,7 +266,7 @@ StringAccum &
 operator<<(StringAccum &sa, long i)
 {
     if (char *x = sa.reserve(24)) {
-        int len = sprintf(x, "%ld", i);
+        int len = snprintf(x, 24, "%ld", i);
         sa.adjust_length(len);
     }
     return sa;
@@ -279,7 +279,7 @@ StringAccum &
 operator<<(StringAccum &sa, unsigned long u)
 {
     if (char *x = sa.reserve(24)) {
-        int len = sprintf(x, "%lu", u);
+        int len = snprintf(x, 24, "%lu", u);
         sa.adjust_length(len);
     }
     return sa;
@@ -292,7 +292,7 @@ StringAccum &
 operator<<(StringAccum &sa, long long i)
 {
     if (char *x = sa.reserve(24)) {
-        int len = sprintf(x, "%lld", i);
+        int len = snprintf(x, 24, "%lld", i);
         sa.adjust_length(len);
     }
     return sa;
@@ -305,7 +305,7 @@ StringAccum &
 operator<<(StringAccum &sa, unsigned long long u)
 {
     if (char *x = sa.reserve(24)) {
-        int len = sprintf(x, "%llu", u);
+        int len = snprintf(x, 24, "%llu", u);
         sa.adjust_length(len);
     }
     return sa;
@@ -315,7 +315,7 @@ StringAccum &
 operator<<(StringAccum &sa, double d)
 {
     if (char *x = sa.reserve(256)) {
-        int len = sprintf(x, "%.12g", d);
+        int len = snprintf(x, 256, "%.12g", d);
         sa.adjust_length(len);
     }
     return sa;
@@ -334,7 +334,7 @@ StringAccum::vsnprintf(int n, const char *format, va_list val)
 #if HAVE_VSNPRINTF
         int len = ::vsnprintf(x, n + 1, format, val);
 #else
-        int len = vsprintf(x, format, val);
+        int len = ::vsnprintf(x, n + 1, format, val);
         assert(len <= n);
 #endif
         adjust_length(len);
