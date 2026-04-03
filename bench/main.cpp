@@ -31,6 +31,7 @@
 #include "bench_util.h"
 #include "tpcc_workload.h"
 #include "tpcc_txn.h"
+#include "tpcc_query.h"
 #include "tpcc_config.h"
 #include "tpcc_helper.h"
 #include "ycsb_workload.h"
@@ -317,9 +318,69 @@ int main(int argc, char* argv[])
     auto start_time = Clock::now();
 
     if (cfg.workload == oro::WorkloadType::TPCC) {
-        // TPC-C transaction execution is not yet implemented.
-        printf("    TPC-C transaction execution not yet implemented.\n");
-        printf("    Schema creation and data population completed successfully.\n");
+        // TPC-C worker threads
+        for (uint32_t t = 0; t < cfg.threads; ++t) {
+            workers.emplace_back([&, t]() {
+                MOT::SessionContext* session = engine->GetSessionManager()->CreateSessionContext();
+                if (!session) {
+                    fprintf(stderr, "ERROR: Worker %u failed to create session\n", t);
+                    return;
+                }
+                MOT::TxnManager* txn = session->GetTxnManager();
+                oro::ThreadStats& stats = all_stats[t];
+                oro::FastRandom rng(t * 31337 + 7);
+                // Each thread is assigned a home warehouse (round-robin)
+                uint64_t home_w = (t % cfg.tpcc_warehouses) + 1;
+                uint32_t num_wh = cfg.tpcc_warehouses;
+
+                while (running.load(std::memory_order_relaxed)) {
+                    auto txnType = oro::tpcc::PickTxnType(cfg, rng);
+                    MOT::RC rc = MOT::RC_ABORT;
+
+                    switch (txnType) {
+                        case oro::tpcc::TxnType::NEW_ORDER: {
+                            auto params = oro::tpcc::GenNewOrder(num_wh, home_w, rng);
+                            rc = oro::tpcc::RunNewOrder(txn, tpcc_tables, params, rng);
+                            if (rc == MOT::RC_OK) stats.tpcc_new_order_ok++;
+                            else stats.tpcc_new_order_fail++;
+                            break;
+                        }
+                        case oro::tpcc::TxnType::PAYMENT: {
+                            auto params = oro::tpcc::GenPayment(num_wh, home_w, rng);
+                            rc = oro::tpcc::RunPayment(txn, tpcc_tables, params);
+                            if (rc == MOT::RC_OK) stats.tpcc_payment_ok++;
+                            else stats.tpcc_payment_fail++;
+                            break;
+                        }
+                        case oro::tpcc::TxnType::ORDER_STATUS: {
+                            auto params = oro::tpcc::GenOrderStatus(home_w, rng);
+                            rc = oro::tpcc::RunOrderStatus(txn, tpcc_tables, params);
+                            if (rc == MOT::RC_OK) stats.tpcc_order_status_ok++;
+                            else stats.tpcc_order_status_fail++;
+                            break;
+                        }
+                        case oro::tpcc::TxnType::DELIVERY: {
+                            auto params = oro::tpcc::GenDelivery(home_w, rng);
+                            rc = oro::tpcc::RunDelivery(txn, tpcc_tables, params);
+                            if (rc == MOT::RC_OK) stats.tpcc_delivery_ok++;
+                            else stats.tpcc_delivery_fail++;
+                            break;
+                        }
+                        case oro::tpcc::TxnType::STOCK_LEVEL: {
+                            auto params = oro::tpcc::GenStockLevel(home_w, rng);
+                            rc = oro::tpcc::RunStockLevel(txn, tpcc_tables, params);
+                            if (rc == MOT::RC_OK) stats.tpcc_stock_level_ok++;
+                            else stats.tpcc_stock_level_fail++;
+                            break;
+                        }
+                    }
+                    if (rc == MOT::RC_OK) stats.commits++;
+                    else stats.aborts++;
+                }
+
+                engine->GetSessionManager()->DestroySessionContext(session);
+            });
+        }
     } else {
         // YCSB worker threads
         for (uint32_t t = 0; t < cfg.threads; ++t) {
@@ -339,24 +400,23 @@ int main(int argc, char* argv[])
                 while (running.load(std::memory_order_relaxed)) {
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
                         txn, ycsb_tables, cfg.ycsb_profile,
-                        cfg.ycsb_distribution,
-                        (cfg.ycsb_distribution == oro::Distribution::UNIFORM)
-                            ? static_cast<void*>(&uniform_gen)
-                            : static_cast<void*>(&zipfian_gen),
-                        rng, cfg.ycsb_field_count, cfg.ycsb_field_length,
-                        cfg.ycsb_ops_per_txn, cfg.ycsb_scan_length);
+                        cfg.ycsb_ops_per_txn,
+                        cfg.ycsb_field_count, cfg.ycsb_field_length,
+                        cfg.ycsb_scan_length, cfg.ycsb_record_count,
+                        &uniform_gen, &zipfian_gen,
+                        cfg.ycsb_distribution, rng, t);
 
-                    if (rc == MOT::RC_OK)
-                        stats.commits++;
-                    else
-                        stats.aborts++;
+                    if (rc == MOT::RC_OK) stats.commits++;
+                    else stats.aborts++;
                 }
 
                 engine->GetSessionManager()->DestroySessionContext(session);
             });
         }
+    }
 
-        // Timer thread
+    // Timer thread — shared by both workloads
+    {
         std::thread timer([&]() {
             std::this_thread::sleep_for(std::chrono::seconds(cfg.duration_sec));
             running.store(false, std::memory_order_relaxed);
