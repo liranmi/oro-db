@@ -360,6 +360,66 @@ static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     }
 }
 
+// Debug: verify insert by searching with the same key built by the engine
+static void VerifyCustomerInsert(TxnManager* txn, TpccTables& t,
+                                 uint64_t w_id, uint64_t d_id, uint64_t c_id)
+{
+    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    Index* ix = t.customer->GetPrimaryIndex();
+
+    // 1. Point lookup with RowLookupByKey (this works in NewOrder/Payment)
+    Key* key1 = ix->CreateNewSearchKey();
+    EncodeCustKey(key1, w_id, d_id, c_id);
+    RC rc1 = RC_OK;
+    Row* r1 = txn->RowLookupByKey(t.customer, AccessType::RD, key1, rc1);
+
+    // 2. Build key using engine's BuildKey for comparison
+    Key* key2 = ix->CreateNewSearchKey();
+    // Need a committed row to BuildKey from — use RowLookupByKey first
+    // If lookup fails, try Begin() to get any row and BuildKey from it
+    Row* anyRow = nullptr;
+    RC rc3 = RC_OK;
+    IndexIterator* beginIt = ix->Begin(0);
+    if (beginIt && beginIt->IsValid()) {
+        Sentinel* s = beginIt->GetPrimarySentinel();
+        if (s) anyRow = txn->RowLookup(AccessType::RD, s, rc3);
+    }
+    if (anyRow) {
+        ix->BuildKey(t.customer, anyRow, key2);
+    }
+
+    // 3. Iterator Search with manual key
+    bool found2 = false;
+    IndexIterator* it = ix->Search(key1, true, true, 0, found2);
+    bool valid2 = it && it->IsValid();
+
+    // 4. Print both keys for comparison
+    fprintf(stderr, "VERIFY C(%lu,%lu,%lu): lookup=%s  search found=%d valid=%d  keyLen=%u\n",
+            (unsigned long)w_id, (unsigned long)d_id, (unsigned long)c_id,
+            r1 ? "OK" : "NULL", (int)found2, (int)valid2, key1->GetKeyLength());
+    const uint8_t* kb = key1->GetKeyBuf();
+    fprintf(stderr, "  manual key: ");
+    for (uint16_t i = 0; i < key1->GetKeyLength(); i++)
+        fprintf(stderr, "%02x", kb[i]);
+    fprintf(stderr, "\n");
+    if (anyRow) {
+        const uint8_t* kb2 = key2->GetKeyBuf();
+        fprintf(stderr, "  engine key: ");
+        for (uint16_t i = 0; i < key2->GetKeyLength(); i++)
+            fprintf(stderr, "%02x", kb2[i]);
+        fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "  engine key: (no row from Begin, valid=%d)\n",
+                beginIt ? (int)beginIt->IsValid() : -1);
+    }
+
+    if (beginIt) delete beginIt;
+
+    if (it) delete it;
+    ix->DestroyKey(key1);
+    txn->Rollback();
+}
+
 static void PopulateCustomers(TxnManager* txn, TpccTables& t,
                               uint64_t w_id, uint64_t d_id, FastRandom& rng)
 {
@@ -400,6 +460,11 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         char data[501]; rng.RandomString(data, 300, 500);
         SetStringValue(row, CUST::C_DATA, data);
         InsertAndCommit(txn, t.customer, row);
+
+        // Verify first few inserts
+        if (c <= 3 && d_id == 1) {
+            VerifyCustomerInsert(txn, t, w_id, d_id, c);
+        }
 
         // History row (Clause 4.3.3.1)
         txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
