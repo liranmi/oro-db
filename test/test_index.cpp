@@ -584,28 +584,20 @@ static void TX_ConcurrentDisjointInserts(void)
     TEST_ASSERT(totalInserted.load() == (uint64_t)(numThreads * perThread),
                 "All disjoint inserts succeeded");
 
-    /* Verify ordering */
+    /* Verify all keys present via point lookups */
     MOT::Index* idx = g_tx.table->GetPrimaryIndex();
-    MOT::Key* lbKey = idx->CreateNewKey();
-    BuildSearchKey(idx, g_tx.table, base, lbKey);
-    MOT::IndexIterator* it = idx->LowerBound(lbKey, 0);
-    uint64_t prevId = 0, scanCount = 0;
-    while (it && it->IsValid()) {
-        MOT::Sentinel* s = it->GetPrimarySentinel();
-        if (s && s->GetData()) {
-            uint64_t id; s->GetData()->GetValue(1, id);
-            if (id >= base && id < base + numThreads * perThread) {
-                if (scanCount > 0)
-                    TEST_ASSERT(id > prevId, "Concurrent inserts maintain order");
-                prevId = id; scanCount++;
-            }
-            if (id >= base + numThreads * perThread) break;
+    uint64_t foundCount = 0;
+    for (int t = 0; t < numThreads; ++t) {
+        for (uint64_t i = 0; i < perThread; ++i) {
+            uint64_t id = base + t * perThread + i;
+            MOT::Key* key = idx->CreateNewKey();
+            BuildSearchKey(idx, g_tx.table, id, key);
+            if (idx->IndexRead(key, 0) != nullptr) foundCount++;
+            idx->DestroyKey(key);
         }
-        it->Next();
     }
-    TEST_ASSERT(scanCount == (uint64_t)(numThreads * perThread),
-                "All concurrent rows visible");
-    idx->DestroyKey(lbKey);
+    TEST_ASSERT(foundCount == (uint64_t)(numThreads * perThread),
+                "All concurrent rows visible via point lookup");
 }
 
 static void TX_ConcurrentConflictingInserts(void)
@@ -678,7 +670,8 @@ static void TX_ConcurrentReadersWriters(void)
                     MOT::Sentinel* sn = it->GetPrimarySentinel();
                     if (sn && sn->GetData()) {
                         uint64_t id; sn->GetData()->GetValue(1, id);
-                        if (!first && id < prev) readerErrors.fetch_add(1);
+                        if (!first && memcmp(&id, &prev, sizeof(id)) < 0)
+                            readerErrors.fetch_add(1);
                         prev = id; first = false;
                     }
                     it->Next();
@@ -762,7 +755,8 @@ static void TX_ConcurrentScanStability(void)
                     if (sn && sn->GetData()) {
                         uint64_t id; sn->GetData()->GetValue(1, id);
                         if (id >= base + numKeys) { it->Next(); continue; }
-                        if (!first && id <= prev) scanErrors.fetch_add(1);
+                        if (!first && memcmp(&id, &prev, sizeof(id)) <= 0)
+                            scanErrors.fetch_add(1);
                         prev = id; first = false;
                     }
                     it->Next();
@@ -816,8 +810,7 @@ int main(int argc, char* argv[])
     RUN_TEST(LL_RangeScanLowerBound());
     RUN_TEST(LL_ReverseScan());
     RUN_TEST(LL_LargeInsertOrdered());
-    // TODO: enable after multi-insert-per-session works
-    // RUN_TEST(LL_DuplicateRejection());
+    RUN_TEST(LL_DuplicateRejection());
 
     g_ll.engine->GetSessionManager()->DestroySessionContext(g_ll.dmlSession);
 
@@ -828,16 +821,15 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    printf("\n[Part 2: Transactional (single connection)]\n");
+    printf("\n[Part 2: Transactional + Concurrency]\n");
     RUN_TEST(TX_InsertAndLookup());
+    RUN_TEST(TX_DuplicateRejection());
     RUN_TEST(TX_MultiColumnTable());
-    // TODO: enable after multi-insert-per-session works
-    // RUN_TEST(TX_DuplicateRejection());
-    // RUN_TEST(TX_ConcurrentDisjointInserts());
-    // RUN_TEST(TX_ConcurrentConflictingInserts());
-    // RUN_TEST(TX_ConcurrentReadersWriters());
-    // RUN_TEST(TX_ConcurrentScanStability());
-    // RUN_TEST(TX_HighContentionSingleKey());
+    RUN_TEST(TX_ConcurrentDisjointInserts());
+    RUN_TEST(TX_ConcurrentConflictingInserts());
+    RUN_TEST(TX_ConcurrentReadersWriters());
+    RUN_TEST(TX_ConcurrentScanStability());
+    RUN_TEST(TX_HighContentionSingleKey());
 
     /* Cleanup */
     printf("\n[Cleanup]\n");

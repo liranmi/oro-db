@@ -339,12 +339,11 @@ int main(int argc, char* argv[])
                 while (running.load(std::memory_order_relaxed)) {
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
                         txn, ycsb_tables, cfg.ycsb_profile,
-                        cfg.ycsb_distribution,
-                        (cfg.ycsb_distribution == oro::Distribution::UNIFORM)
-                            ? static_cast<void*>(&uniform_gen)
-                            : static_cast<void*>(&zipfian_gen),
-                        rng, cfg.ycsb_field_count, cfg.ycsb_field_length,
-                        cfg.ycsb_ops_per_txn, cfg.ycsb_scan_length);
+                        cfg.ycsb_ops_per_txn,
+                        cfg.ycsb_field_count, cfg.ycsb_field_length,
+                        cfg.ycsb_scan_length, cfg.ycsb_record_count,
+                        &uniform_gen, &zipfian_gen,
+                        cfg.ycsb_distribution, rng, t);
 
                     if (rc == MOT::RC_OK)
                         stats.commits++;
