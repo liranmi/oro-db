@@ -47,39 +47,46 @@ static Row* Lookup(TxnManager* txn, Table* table, Index* ix,
 }
 
 // Helper: mid-point customer lookup by last name (Clause 2.5.2.2)
-// Scan secondary index ix_customer_last, collect all matching rows, pick middle one.
+// Customer lookup by last name — Clause 2.5.2.2 (mid-point selection).
+//
+// Scans the primary customer index (C_W_ID, C_D_ID, C_ID) for the given
+// district, filtering by C_LAST. Collects all matches and picks the middle row.
+//
+// NOTE: The secondary index ix_customer_last is not populated by standalone
+// InsertRow (secondary index maintenance requires the full openGauss DDL path).
+// Scanning the primary index is functionally correct per the TPC-C spec.
 static Row* LookupCustomerByLastName(TxnManager* txn, const TpccTables& t,
                                      uint64_t w_id, uint64_t d_id, const char* c_last,
                                      AccessType atype, RC& rc)
 {
-    Key* skey = t.ix_customer_last->CreateNewSearchKey();
-    if (!skey) { rc = RC_MEMORY_ALLOCATION_ERROR; return nullptr; }
-    EncodeCustLastKey(skey, w_id, d_id, c_last);
+    // Scan primary index from (w_id, d_id, C_ID=1) forward
+    Key* lo_key = t.ix_customer->CreateNewSearchKey();
+    if (!lo_key) { rc = RC_MEMORY_ALLOCATION_ERROR; return nullptr; }
+    EncodeCustKey(lo_key, w_id, d_id, 1);
 
     bool found = false;
-    IndexIterator* it = t.ix_customer_last->Search(skey, true, true, 0, found);
-    t.ix_customer_last->DestroyKey(skey);
+    // matchKey=true: exact match on (w_id, d_id, 1) — customer C_ID=1 always exists
+    IndexIterator* it = t.ix_customer->Search(lo_key, true, true, 0, found);
 
-    // Collect all sentinels with matching last name
     std::vector<Sentinel*> matches;
     while (it && it->IsValid()) {
         Sentinel* s = it->GetPrimarySentinel();
         if (!s) break;
-        // Read the row to verify last name matches (scan may overshoot)
         Row* r = txn->RowLookup(AccessType::RD, s, rc);
         if (!r || rc != RC_OK) break;
-        // Verify key prefix still matches (w_id, d_id, c_last)
         uint64_t rw, rd;
         r->GetValue(CUST::C_W_ID, rw);
         r->GetValue(CUST::C_D_ID, rd);
-        if (rw != w_id || rd != d_id) break;
+        if (rw != w_id || rd != d_id) break;  // past our district
         char rlast[17] = {0};
         memcpy(rlast, r->GetValue(CUST::C_LAST), 16);
-        if (strcmp(rlast, c_last) != 0) break;
-        matches.push_back(s);
+        if (strcmp(rlast, c_last) == 0) {
+            matches.push_back(s);
+        }
         it->Next();
     }
-    if (it) { it->Destroy(); delete it; }
+    t.ix_customer->DestroyKey(lo_key);
+    delete it;
 
     if (matches.empty()) { rc = RC_LOCAL_ROW_NOT_FOUND; return nullptr; }
 
@@ -228,7 +235,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         olrow->SetValue<int64_t>(ORDL::OL_DELIVERY_D, 0);  // NULL
         olrow->SetValue<uint64_t>(ORDL::OL_QUANTITY, ol_quantity);
         olrow->SetValue<double>(ORDL::OL_AMOUNT, ol_amount);
-        olrow->SetValue(ORDL::OL_DIST_INFO, ol_dist_info);
+        olrow->SetValueVariable(ORDL::OL_DIST_INFO, ol_dist_info, strlen(ol_dist_info) + 1);
         rc = txn->InsertRow(olrow);
         if (rc != RC_OK) { t.order_line->DestroyRow(olrow); txn->Rollback(); return rc; }
     }
@@ -314,7 +321,7 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
         size_t remaining = 500 - plen;
         memcpy(new_data + plen, c_row->GetValue(CUST::C_DATA), remaining);
         new_data[500] = '\0';
-        c_row->SetValue(CUST::C_DATA, new_data);
+        c_row->SetValueVariable(CUST::C_DATA, new_data, strlen(new_data) + 1);
     }
 
     // SQL: INSERT INTO HISTORY (H_C_ID, H_C_D_ID, H_C_W_ID, H_D_ID, H_W_ID,
@@ -339,7 +346,7 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
         char d_name[11] = {0};
         memcpy(d_name, d_row->GetValue(DIST::D_NAME), 10);
         snprintf(h_data, sizeof(h_data), "%.10s    %.10s", w_name, d_name);
-        hrow->SetValue(HIST::H_DATA, h_data);
+        hrow->SetValueVariable(HIST::H_DATA, h_data, strlen(h_data) + 1);
         rc = txn->InsertRow(hrow);
         if (rc != RC_OK) { t.history->DestroyRow(hrow); txn->Rollback(); return rc; }
     }
@@ -405,9 +412,10 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
                 orow->GetValue(ORD::O_ID, latest_o_id);
                 break;
             }
-            it->Prev();
+            // Reverse iterator: Next() moves backwards through the index
+            it->Next();
         }
-        if (it) { it->Destroy(); delete it; }
+        delete it;
     }
 
     if (latest_o_id == 0) {
@@ -445,7 +453,7 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
             (void)ol_i_id; (void)ol_quantity; (void)ol_amount;
             it->Next();
         }
-        if (it) { it->Destroy(); delete it; }
+        delete it;
     }
 
     return txn->Commit();
@@ -488,12 +496,12 @@ RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
                             norow->GetValue(NORD::NO_O_ID, no_o_id);
                             // SQL: DELETE FROM NEW_ORDER WHERE NO_W_ID=? AND NO_D_ID=? AND NO_O_ID=?
                             rc = txn->DeleteLastRow();
-                            if (rc != RC_OK) { if (it) { it->Destroy(); delete it; } txn->Rollback(); return rc; }
+                            if (rc != RC_OK) { delete it; txn->Rollback(); return rc; }
                         }
                     }
                 }
             }
-            if (it) { it->Destroy(); delete it; }
+            delete it;
         }
 
         if (no_o_id == 0) continue;  // no undelivered orders for this district
@@ -537,7 +545,7 @@ RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
                 olrow->SetValue<int64_t>(ORDL::OL_DELIVERY_D, now);
                 it->Next();
             }
-            if (it) { it->Destroy(); delete it; }
+            delete it;
         }
 
         // SQL: UPDATE CUSTOMER SET C_BALANCE = C_BALANCE + :ol_total,
@@ -613,7 +621,7 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
             item_ids.push_back(ol_i_id);
             it->Next();
         }
-        if (it) { it->Destroy(); delete it; }
+        delete it;
     }
 
     // Deduplicate item_ids

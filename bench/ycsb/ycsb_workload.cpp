@@ -78,7 +78,7 @@ bool CreateSchema(TxnManager* txn, YcsbTables& tables,
         return false;
     }
     ix->SetNumIndexFields(1);
-    ix->SetLenghtKeyFields(0, Col::YCSB_KEY, sizeof(uint64_t));
+    ix->SetLenghtKeyFields(0, Col::YCSB_KEY, YCSB_KEY_LEN);  // 9: matches PackKey output
     ix->SetTable(tables.usertable);
 
     rc = txn->CreateIndex(tables.usertable, ix, true /* isPrimary */);
