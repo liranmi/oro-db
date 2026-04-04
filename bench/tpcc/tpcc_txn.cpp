@@ -70,6 +70,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     {
         Row* orow = t.order_tbl->CreateNewRow();
         if (!orow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
+        orow->SetValue<uint64_t>(ORD::O_ID, o_id);
         orow->SetValue<uint64_t>(ORD::O_C_ID, p.c_id);
         orow->SetValue<uint64_t>(ORD::O_D_ID, p.d_id);
         orow->SetValue<uint64_t>(ORD::O_W_ID, p.w_id);
@@ -131,6 +132,8 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         // SQL: INSERT INTO ORDER_LINE
         Row* olrow = t.order_line->CreateNewRow();
         if (!olrow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
+        olrow->SetValue<uint64_t>(ORDL::OL_O_ID, o_id);
+        olrow->SetValue<uint64_t>(ORDL::OL_NUMBER, (uint64_t)(ol + 1));
         olrow->SetValue<uint64_t>(ORDL::OL_I_ID, ol_i_id);
         olrow->SetValue<uint64_t>(ORDL::OL_D_ID, p.d_id);
         olrow->SetValue<uint64_t>(ORDL::OL_W_ID, p.w_id);
@@ -195,6 +198,7 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     {
         Row* hrow = t.history->CreateNewRow();
         if (!hrow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
+        hrow->SetValue<uint64_t>(HIST::H_C_ID, p.c_id);
         hrow->SetValue<uint64_t>(HIST::H_C_D_ID, p.c_d_id);
         hrow->SetValue<uint64_t>(HIST::H_C_W_ID, p.c_w_id);
         hrow->SetValue<uint64_t>(HIST::H_D_ID, p.d_id);
