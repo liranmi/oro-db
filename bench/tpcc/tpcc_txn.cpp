@@ -20,7 +20,6 @@
 
 #include <cstring>
 #include <ctime>
-#include <vector>
 #include <algorithm>
 
 using namespace MOT;
@@ -58,7 +57,8 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double d_tax; d_row->GetValue(DIST::D_TAX, d_tax);
     uint64_t d_next_o_id; d_row->GetValue(DIST::D_NEXT_O_ID, d_next_o_id);
-    d_row->SetValue<uint64_t>(DIST::D_NEXT_O_ID, d_next_o_id + 1);
+    rc = txn->UpdateRow(d_row, DIST::D_NEXT_O_ID, d_next_o_id + 1);
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
     uint64_t o_id = d_next_o_id;
 
     // SQL: SELECT C_DISCOUNT FROM CUSTOMER
@@ -112,15 +112,17 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
 
         uint64_t s_quantity; s_row->GetValue(STK::S_QUANTITY, s_quantity);
         s_quantity = (s_quantity >= ol_quantity + 10) ? s_quantity - ol_quantity : s_quantity - ol_quantity + 91;
-        s_row->SetValue<uint64_t>(STK::S_QUANTITY, s_quantity);
+        rc = txn->UpdateRow(s_row, STK::S_QUANTITY, s_quantity);
+        if (rc != RC_OK) { txn->Rollback(); return rc; }
+        Row* s_draft = txn->GetLastAccessedDraft();
 
         uint64_t s_ytd; s_row->GetValue(STK::S_YTD, s_ytd);
-        s_row->SetValue<uint64_t>(STK::S_YTD, s_ytd + ol_quantity);
+        s_draft->SetValue<uint64_t>(STK::S_YTD, s_ytd + ol_quantity);
         uint64_t s_order_cnt; s_row->GetValue(STK::S_ORDER_CNT, s_order_cnt);
-        s_row->SetValue<uint64_t>(STK::S_ORDER_CNT, s_order_cnt + 1);
+        s_draft->SetValue<uint64_t>(STK::S_ORDER_CNT, s_order_cnt + 1);
         if (ol_supply_w_id != p.w_id) {
             uint64_t s_remote_cnt; s_row->GetValue(STK::S_REMOTE_CNT, s_remote_cnt);
-            s_row->SetValue<uint64_t>(STK::S_REMOTE_CNT, s_remote_cnt + 1);
+            s_draft->SetValue<uint64_t>(STK::S_REMOTE_CNT, s_remote_cnt + 1);
         }
 
         char ol_dist_info[25] = {0};
@@ -158,31 +160,35 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double w_ytd; w_row->GetValue(WH::W_YTD, w_ytd);
-    txn->UpdateRow(w_row, WH::W_YTD, w_ytd + p.h_amount);
+    rc = txn->UpdateRow(w_row, WH::W_YTD, w_ytd + p.h_amount);
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
 
     // SQL: UPDATE DISTRICT SET D_YTD += :h_amount
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD_FOR_UPDATE, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double d_ytd; d_row->GetValue(DIST::D_YTD, d_ytd);
-    txn->UpdateRow(d_row, DIST::D_YTD, d_ytd + p.h_amount);
+    rc = txn->UpdateRow(d_row, DIST::D_YTD, d_ytd + p.h_amount);
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
 
     // Customer lookup
     Row* c_row = nullptr;
     if (p.by_last_name) {
         // TODO: by-last-name scan
-        txn->Rollback(); return RC_OK;
+        txn->Rollback(); return RC_ABORT;
     }
     c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
                    PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // SQL: UPDATE CUSTOMER
+    // SQL: UPDATE CUSTOMER — use UpdateRow to create MVCC draft, then modify draft
     double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
-    c_row->SetValue<double>(CUST::C_BALANCE, c_balance - p.h_amount);
+    rc = txn->UpdateRow(c_row, CUST::C_BALANCE, c_balance - p.h_amount);
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
+    Row* c_draft = txn->GetLastAccessedDraft();
     double c_ytd_payment; c_row->GetValue(CUST::C_YTD_PAYMENT, c_ytd_payment);
-    c_row->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
+    c_draft->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
     uint64_t c_payment_cnt; c_row->GetValue(CUST::C_PAYMENT_CNT, c_payment_cnt);
-    c_row->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
+    c_draft->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
 
     // SQL: INSERT INTO HISTORY
     {
@@ -217,7 +223,7 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
     RC rc = RC_OK;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
-    if (p.by_last_name) { txn->Rollback(); return RC_OK; }
+    if (p.by_last_name) { txn->Rollback(); return RC_ABORT; }
 
     Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
                         PackCustKey(p.w_id, p.d_id, p.c_id), rc);
@@ -267,21 +273,23 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
 
     // Check stock for recent order-lines via point lookups
     uint64_t o_id_low = (d_next_o_id > 20) ? (d_next_o_id - 20) : 1;
-    std::vector<uint64_t> item_ids;
+    uint64_t item_ids[20 * MAX_OL_CNT];
+    uint32_t item_count = 0;
     for (uint64_t oid = o_id_low; oid < d_next_o_id; oid++) {
         for (uint64_t ol = 1; ol <= MAX_OL_CNT; ol++) {
             Row* olrow = Lookup(txn, t.order_line, t.ix_order_line, AccessType::RD,
                                 PackOlKey(p.w_id, p.d_id, oid, ol), rc);
             if (!olrow) break;
             uint64_t ol_i_id; olrow->GetValue(ORDL::OL_I_ID, ol_i_id);
-            item_ids.push_back(ol_i_id);
+            item_ids[item_count++] = ol_i_id;
         }
     }
-    std::sort(item_ids.begin(), item_ids.end());
-    item_ids.erase(std::unique(item_ids.begin(), item_ids.end()), item_ids.end());
+    std::sort(item_ids, item_ids + item_count);
+    uint32_t unique_count = (uint32_t)(std::unique(item_ids, item_ids + item_count) - item_ids);
 
     uint64_t low_stock = 0;
-    for (uint64_t i_id : item_ids) {
+    for (uint32_t i = 0; i < unique_count; i++) {
+        uint64_t i_id = item_ids[i];
         Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, i_id), rc);
         if (!s_row) continue;
         uint64_t sq; s_row->GetValue(STK::S_QUANTITY, sq);
