@@ -158,8 +158,9 @@ void Row::CopyVersion(const Row& src, Column** newCols, uint32_t newColCnt, Colu
 void Row::SetValueVariable(int id, const void* ptr, uint32_t size)
 {
     const uint64_t fieldSize = m_table->GetFieldSize(id);
+    const uint64_t pos = m_table->GetFieldOffset(id);
     MOT_ASSERT(size < fieldSize);
-    errno_t erc = memcpy_s(&m_data[fieldSize], fieldSize, ptr, size);
+    errno_t erc = memcpy_s(&m_data[pos], fieldSize, ptr, size);
     securec_check(erc, "\0", "\0");
 }
 
