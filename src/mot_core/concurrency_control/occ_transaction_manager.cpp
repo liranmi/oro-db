@@ -343,6 +343,11 @@ RC OccTransactionManager::ValidateOcc(TxnManager* txMan)
             break;
         }
 
+        MOT_LOG_DEBUG("OCC Commit: access_set=%u writes=%u inserts=%u",
+                      rowCount,
+                      m_writeSetSize - m_insertSetSize,
+                      m_insertSetSize);
+
         rc = LockHeaders(txMan, numSentinelLock);
         if (rc != RC_OK) {
             break;
