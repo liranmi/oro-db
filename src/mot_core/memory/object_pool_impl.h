@@ -443,11 +443,12 @@ public:
     {
         uint8_t ix = ++(m_head.m_nextFreeObj);
         uint8_t oix = m_head.m_objIndexArr[ix];
-        if (oix == NOT_VALID || ix >= m_totalCount) {
-            fprintf(stderr, "ObjPool::AllocNoLock BAD: ix=%u oix=%u totalCount=%u freeCount=%u "
-                    "nextFreeObj=%u pool=%p obj_size=%u\n",
-                    (unsigned)ix, (unsigned)oix, (unsigned)m_totalCount, (unsigned)m_freeCount,
-                    (unsigned)m_head.m_nextFreeObj, (void*)this, (unsigned)m_parent->m_size);
+        if (oix == NOT_VALID) {
+            fprintf(stderr, "ObjPool::AllocNoLock NOT_VALID: ix=%u totalCount=%u freeCount=%u "
+                    "nextFreeObj=%u nextOccupiedObj=%u pool=%p obj_size=%u\n",
+                    (unsigned)ix, (unsigned)m_totalCount, (unsigned)m_freeCount,
+                    (unsigned)m_head.m_nextFreeObj, (unsigned)m_head.m_nextOccupiedObj,
+                    (void*)this, (unsigned)m_parent->m_size);
             fflush(stderr);
             abort();
         }
@@ -470,7 +471,7 @@ public:
             uint32_t spins = 0;
             while (m_head.m_objIndexArr[ix] == NOT_VALID) {
                 PAUSE
-                if (++spins > 1000000) {
+                if (++spins > 100000) {
                     fprintf(stderr, "ObjPool::Alloc STUCK: ix=%u totalCount=%u freeCount=%u "
                             "nextFreeObj=%u nextOccupiedObj=%u pool=%p obj_size=%u\n",
                             (unsigned)ix, (unsigned)m_totalCount, (unsigned)m_freeCount,
@@ -482,6 +483,15 @@ public:
             }
         }
         uint8_t oix = m_head.m_objIndexArr[ix];
+        if (oix >= m_totalCount) {
+            fprintf(stderr, "ObjPool::Alloc BAD_OIX: ix=%u oix=%u totalCount=%u freeCount=%u "
+                    "nextFreeObj=%u nextOccupiedObj=%u pool=%p obj_size=%u\n",
+                    (unsigned)ix, (unsigned)oix, (unsigned)m_totalCount, (unsigned)m_freeCount,
+                    (unsigned)m_head.m_nextFreeObj, (unsigned)m_head.m_nextOccupiedObj,
+                    (void*)this, (unsigned)m_parent->m_size);
+            fflush(stderr);
+            abort();
+        }
         m_head.m_objIndexArr[ix] = NOT_VALID;
         *ret = (m_head.m_data + static_cast<uint32_t>(oix) * m_parent->m_size);
         ((uint8_t*)(*ret))[m_parent->m_oixOffset] = oix;
