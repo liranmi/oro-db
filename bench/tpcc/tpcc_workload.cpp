@@ -85,6 +85,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- WAREHOUSE (Clause 1.3.1) ----
     t.warehouse = new Table();
     if (!t.warehouse->Init("warehouse", "public.warehouse", WH::W_NUM_COLS)) return false;
+    t.warehouse->AddColumn("W_ID",       8,   F::MOT_TYPE_LONG,    false);
     t.warehouse->AddColumn("W_NAME",     11,  F::MOT_TYPE_VARCHAR, false);
     t.warehouse->AddColumn("W_STREET_1", 21,  F::MOT_TYPE_VARCHAR, false);
     t.warehouse->AddColumn("W_STREET_2", 21,  F::MOT_TYPE_VARCHAR, false);
@@ -104,6 +105,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- DISTRICT (Clause 1.3.2) ----
     t.district = new Table();
     if (!t.district->Init("district", "public.district", DIST::D_NUM_COLS)) return false;
+    t.district->AddColumn("D_ID",        8,  F::MOT_TYPE_LONG,    false);
+    t.district->AddColumn("D_W_ID",      8,  F::MOT_TYPE_LONG,    false);
     t.district->AddColumn("D_NAME",      11, F::MOT_TYPE_VARCHAR, false);
     t.district->AddColumn("D_STREET_1",  21, F::MOT_TYPE_VARCHAR, false);
     t.district->AddColumn("D_STREET_2",  21, F::MOT_TYPE_VARCHAR, false);
@@ -124,6 +127,9 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- CUSTOMER (Clause 1.3.3) ----
     t.customer = new Table();
     if (!t.customer->Init("customer", "public.customer", CUST::C_NUM_COLS)) return false;
+    t.customer->AddColumn("C_ID",          8,   F::MOT_TYPE_LONG,    false);
+    t.customer->AddColumn("C_D_ID",       8,   F::MOT_TYPE_LONG,    false);
+    t.customer->AddColumn("C_W_ID",       8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_FIRST",       17,  F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_MIDDLE",      3,   F::MOT_TYPE_VARCHAR, false);
     t.customer->AddColumn("C_LAST",        17,  F::MOT_TYPE_VARCHAR, false);
@@ -155,6 +161,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // No natural PK per spec — use fake primary with surrogate m_rowId
     t.history = new Table();
     if (!t.history->Init("history", "public.history", HIST::H_NUM_COLS)) return false;
+    t.history->AddColumn("H_C_ID",   8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_C_D_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_C_W_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.history->AddColumn("H_D_ID",   8,  F::MOT_TYPE_LONG,    false);
@@ -200,9 +207,10 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- ORDER (Clause 1.3.6) ----
     t.order_tbl = new Table();
     if (!t.order_tbl->Init("oorder", "public.oorder", ORD::O_NUM_COLS)) return false;
-    t.order_tbl->AddColumn("O_C_ID",       8, F::MOT_TYPE_LONG, false);
+    t.order_tbl->AddColumn("O_ID",         8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_D_ID",       8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_W_ID",       8, F::MOT_TYPE_LONG, false);
+    t.order_tbl->AddColumn("O_C_ID",       8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_ENTRY_D",    8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_CARRIER_ID", 8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_OL_CNT",     8, F::MOT_TYPE_LONG, false);
@@ -218,9 +226,11 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- ORDER-LINE (Clause 1.3.7) ----
     t.order_line = new Table();
     if (!t.order_line->Init("order_line", "public.order_line", ORDL::OL_NUM_COLS)) return false;
-    t.order_line->AddColumn("OL_I_ID",       8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_O_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_D_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_W_ID",       8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_NUMBER",     8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_I_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_SUPPLY_W_ID",8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_DELIVERY_D", 8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
@@ -237,6 +247,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- ITEM (Clause 1.3.8) ----
     t.item = new Table();
     if (!t.item->Init("item", "public.item", ITEM::I_NUM_COLS)) return false;
+    t.item->AddColumn("I_ID",    8,  F::MOT_TYPE_LONG,    false);
     t.item->AddColumn("I_IM_ID", 8,  F::MOT_TYPE_LONG,    false);
     t.item->AddColumn("I_NAME",  25, F::MOT_TYPE_VARCHAR, false);
     t.item->AddColumn("I_PRICE", 8,  F::MOT_TYPE_DOUBLE,  false);
@@ -252,6 +263,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     // ---- STOCK (Clause 1.3.9) ----
     t.stock = new Table();
     if (!t.stock->Init("stock", "public.stock", STK::S_NUM_COLS)) return false;
+    t.stock->AddColumn("S_I_ID",       8,  F::MOT_TYPE_LONG,    false);
+    t.stock->AddColumn("S_W_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_DIST_01",    25, F::MOT_TYPE_VARCHAR, false);
     t.stock->AddColumn("S_DIST_02",    25, F::MOT_TYPE_VARCHAR, false);
@@ -292,6 +305,7 @@ static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
     for (uint64_t i = 1; i <= ITEM_COUNT; i++) {
         Row* row = t.item->CreateNewRow();
         if (!row) continue;
+        row->SetValue<uint64_t>(ITEM::I_ID, i);
         row->SetValue<uint64_t>(ITEM::I_IM_ID, rng.NextUniform(1, 10000));
         char name[25]; rng.RandomString(name, 14, 24);
         SetStringValue(row, ITEM::I_NAME, name);
@@ -318,6 +332,7 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
 {
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     Row* row = t.warehouse->CreateNewRow();
+    row->SetValue<uint64_t>(WH::W_ID, w_id);
     char buf[21];
     rng.RandomString(buf, 6, 10);  SetStringValue(row, WH::W_NAME, buf);
     rng.RandomString(buf, 10, 20); SetStringValue(row, WH::W_STREET_1, buf);
@@ -353,6 +368,8 @@ static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
         Row* row = t.district->CreateNewRow();
+        row->SetValue<uint64_t>(DIST::D_ID, d);
+        row->SetValue<uint64_t>(DIST::D_W_ID, w_id);
         char buf[21];
         rng.RandomString(buf, 6, 10); SetStringValue(row, DIST::D_NAME, buf);
         rng.RandomString(buf, 10, 20); SetStringValue(row, DIST::D_STREET_1, buf);
@@ -379,6 +396,9 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
         Row* row = t.customer->CreateNewRow();
+        row->SetValue<uint64_t>(CUST::C_ID, c);
+        row->SetValue<uint64_t>(CUST::C_D_ID, d_id);
+        row->SetValue<uint64_t>(CUST::C_W_ID, w_id);
         char buf[21];
         rng.RandomString(buf, 8, 16); SetStringValue(row, CUST::C_FIRST, buf);
         SetStringValue(row, CUST::C_MIDDLE, "OE");
@@ -414,6 +434,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
         Row* hrow = t.history->CreateNewRow();
+        hrow->SetValue<uint64_t>(HIST::H_C_ID, c);
         hrow->SetValue<uint64_t>(HIST::H_C_D_ID, d_id);
         hrow->SetValue<uint64_t>(HIST::H_C_W_ID, w_id);
         hrow->SetValue<uint64_t>(HIST::H_D_ID, d_id);
@@ -448,6 +469,7 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
 
         // ORDER row
         Row* orow = t.order_tbl->CreateNewRow();
+        orow->SetValue<uint64_t>(ORD::O_ID, o);
         orow->SetValue<uint64_t>(ORD::O_C_ID, c_id);
         orow->SetValue<uint64_t>(ORD::O_D_ID, d_id);
         orow->SetValue<uint64_t>(ORD::O_W_ID, w_id);
@@ -471,6 +493,8 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
         // ORDER-LINE rows
         for (uint64_t ol = 1; ol <= ol_cnt; ol++) {
             Row* olrow = t.order_line->CreateNewRow();
+            olrow->SetValue<uint64_t>(ORDL::OL_O_ID, o);
+            olrow->SetValue<uint64_t>(ORDL::OL_NUMBER, ol);
             olrow->SetValue<uint64_t>(ORDL::OL_I_ID, rng.NextUniform(1, ITEM_COUNT));
             olrow->SetValue<uint64_t>(ORDL::OL_D_ID, d_id);
             olrow->SetValue<uint64_t>(ORDL::OL_W_ID, w_id);
@@ -495,6 +519,8 @@ static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRan
     for (uint64_t i = 1; i <= STOCK_PER_WARE; i++) {
         Row* row = t.stock->CreateNewRow();
         if (!row) continue;
+        row->SetValue<uint64_t>(STK::S_I_ID, i);
+        row->SetValue<uint64_t>(STK::S_W_ID, w_id);
         row->SetValue<uint64_t>(STK::S_QUANTITY, rng.NextUniform(10, 100));
         char dist[25];
         for (int d = 0; d < 10; d++) {

@@ -37,7 +37,8 @@ static constexpr uint32_t NURAND_OL_I_ID = 8191;
 
 // WAREHOUSE table columns
 enum WH : int {
-    W_NAME = 0,        // varchar(10)
+    W_ID = 0,          // int
+    W_NAME,            // varchar(10)
     W_STREET_1,        // varchar(20)
     W_STREET_2,        // varchar(20)
     W_CITY,            // varchar(20)
@@ -51,7 +52,9 @@ enum WH : int {
 
 // DISTRICT table columns
 enum DIST : int {
-    D_NAME = 0,        // varchar(10)
+    D_ID = 0,          // int
+    D_W_ID,            // int
+    D_NAME,            // varchar(10)
     D_STREET_1,        // varchar(20)
     D_STREET_2,        // varchar(20)
     D_CITY,            // varchar(20)
@@ -66,7 +69,10 @@ enum DIST : int {
 
 // CUSTOMER table columns
 enum CUST : int {
-    C_FIRST = 0,       // varchar(16)
+    C_ID = 0,          // int
+    C_D_ID,            // int
+    C_W_ID,            // int
+    C_FIRST,           // varchar(16)
     C_MIDDLE,          // char(2)
     C_LAST,            // varchar(16)
     C_STREET_1,        // varchar(20)
@@ -90,7 +96,8 @@ enum CUST : int {
 
 // HISTORY table columns — no natural PK, uses fake primary (surrogate m_rowId)
 enum HIST : int {
-    H_C_D_ID = 0,
+    H_C_ID = 0,
+    H_C_D_ID,
     H_C_W_ID,
     H_D_ID,
     H_W_ID,
@@ -111,9 +118,10 @@ enum NORD : int {
 
 // ORDER table columns
 enum ORD : int {
-    O_C_ID = 0,
+    O_ID = 0,          // int
     O_D_ID,
     O_W_ID,
+    O_C_ID,
     O_ENTRY_D,         // datetime -> int64
     O_CARRIER_ID,      // int, null for open orders
     O_OL_CNT,          // int
@@ -124,9 +132,11 @@ enum ORD : int {
 
 // ORDER-LINE table columns
 enum ORDL : int {
-    OL_I_ID = 0,
+    OL_O_ID = 0,
     OL_D_ID,
     OL_W_ID,
+    OL_NUMBER,
+    OL_I_ID,
     OL_SUPPLY_W_ID,
     OL_DELIVERY_D,     // datetime -> int64, null for open orders
     OL_QUANTITY,        // int
@@ -138,7 +148,8 @@ enum ORDL : int {
 
 // ITEM table columns
 enum ITEM : int {
-    I_IM_ID = 0,       // int
+    I_ID = 0,          // int
+    I_IM_ID,           // int
     I_NAME,            // varchar(24)
     I_PRICE,           // decimal(5,2) -> double
     I_DATA,            // varchar(50)
@@ -148,7 +159,9 @@ enum ITEM : int {
 
 // STOCK table columns
 enum STK : int {
-    S_QUANTITY = 0,    // int
+    S_I_ID = 0,        // int
+    S_W_ID,            // int
+    S_QUANTITY,        // int
     S_DIST_01,         // char(24)
     S_DIST_02,
     S_DIST_03,
@@ -174,20 +187,20 @@ enum STK : int {
 namespace small {
 
 enum WH : int {
-    W_TAX = 0, W_YTD, W_KEY, W_NUM_COLS
+    W_ID = 0, W_TAX, W_YTD, W_KEY, W_NUM_COLS
 };
 
 enum DIST : int {
-    D_TAX = 0, D_YTD, D_NEXT_O_ID, D_KEY, D_NUM_COLS
+    D_ID = 0, D_W_ID, D_TAX, D_YTD, D_NEXT_O_ID, D_KEY, D_NUM_COLS
 };
 
 enum CUST : int {
-    C_MIDDLE = 0, C_LAST, C_STATE, C_CREDIT, C_DISCOUNT, C_BALANCE,
+    C_ID = 0, C_D_ID, C_W_ID, C_MIDDLE, C_LAST, C_STATE, C_CREDIT, C_DISCOUNT, C_BALANCE,
     C_YTD_PAYMENT, C_PAYMENT_CNT, C_KEY, C_NUM_COLS
 };
 
 enum HIST : int {
-    H_C_D_ID = 0, H_C_W_ID, H_D_ID, H_W_ID, H_DATE, H_AMOUNT, H_KEY, H_NUM_COLS
+    H_C_ID = 0, H_C_D_ID, H_C_W_ID, H_D_ID, H_W_ID, H_DATE, H_AMOUNT, H_KEY, H_NUM_COLS
 };
 
 enum NORD : int {
@@ -195,19 +208,19 @@ enum NORD : int {
 };
 
 enum ORD : int {
-    O_C_ID = 0, O_D_ID, O_W_ID, O_ENTRY_D, O_CARRIER_ID, O_OL_CNT, O_ALL_LOCAL, O_KEY, O_NUM_COLS
+    O_ID = 0, O_D_ID, O_W_ID, O_C_ID, O_ENTRY_D, O_CARRIER_ID, O_OL_CNT, O_ALL_LOCAL, O_KEY, O_NUM_COLS
 };
 
 enum ORDL : int {
-    OL_I_ID = 0, OL_D_ID, OL_W_ID, OL_KEY, OL_NUM_COLS
+    OL_O_ID = 0, OL_D_ID, OL_W_ID, OL_NUMBER, OL_I_ID, OL_KEY, OL_NUM_COLS
 };
 
 enum ITEM : int {
-    I_IM_ID = 0, I_NAME, I_PRICE, I_DATA, I_KEY, I_NUM_COLS
+    I_ID = 0, I_IM_ID, I_NAME, I_PRICE, I_DATA, I_KEY, I_NUM_COLS
 };
 
 enum STK : int {
-    S_QUANTITY = 0, S_REMOTE_CNT, S_KEY, S_NUM_COLS
+    S_I_ID = 0, S_W_ID, S_QUANTITY, S_REMOTE_CNT, S_KEY, S_NUM_COLS
 };
 
 }  // namespace small
