@@ -9,8 +9,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include "bench_util.h"
 #include "row.h"
+#include "index.h"
+#include "index_iterator.h"
+#include "sentinel.h"
+#include "txn.h"
 
 namespace oro::tpcc {
 
@@ -113,6 +118,103 @@ inline MOT::Key* BuildSearchKey(MOT::TxnManager* txn, MOT::Index* ix, uint64_t p
     if (!key) return nullptr;
     key->FillValue(reinterpret_cast<const uint8_t*>(&packed_key), sizeof(uint64_t), 0);
     return key;
+}
+
+// ======================================================================
+// Index cursor helpers
+//
+// Follow the MOT IndexIterator cursor pattern (same as openGauss FDW):
+//   Open:    ix->Begin() / ix->Search() / ix->LowerBound()
+//   Iterate: it->IsValid() + it->Next()
+//   Close:   it->Destroy()
+// ======================================================================
+
+// SELECT COUNT(*) — count all rows in an index (no transaction needed)
+inline uint64_t CountRows(MOT::Index* ix, uint32_t pid = 0)
+{
+    uint64_t count = 0;
+    MOT::IndexIterator* it = ix->Begin(pid);
+    while (it != nullptr && it->IsValid()) {
+        count++;
+        it->Next();
+    }
+    if (it) it->Destroy();
+    return count;
+}
+
+// Range scan [start_key, end_key] inclusive — cursor walks from start to end.
+// Callback returns true to continue, false to stop early.
+inline MOT::RC ScanRange(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* ix,
+                         MOT::AccessType atype, uint64_t start_key, uint64_t end_key,
+                         const std::function<bool(MOT::Row*)>& cb, uint32_t pid = 0)
+{
+    MOT::RC rc = MOT::RC_OK;
+
+    MOT::Key* lo = ix->CreateNewSearchKey();
+    MOT::Key* hi = ix->CreateNewSearchKey();
+    if (!lo || !hi) {
+        if (lo) ix->DestroyKey(lo);
+        if (hi) ix->DestroyKey(hi);
+        return MOT::RC_MEMORY_ALLOCATION_ERROR;
+    }
+    KeyFillU64(lo, 0, start_key);
+    KeyFillU64(hi, 0, end_key);
+
+    bool found = false;
+    MOT::IndexIterator* it = ix->Search(lo, true, true, pid, found);
+
+    while (it != nullptr && it->IsValid()) {
+        // Compare current key against end bound
+        MOT::Key* cur = (MOT::Key*)it->GetKey();
+        if (cur && memcmp(cur->GetKeyBuf(), hi->GetKeyBuf(), hi->GetKeyLength()) > 0)
+            break;
+
+        MOT::Sentinel* sentinel = it->GetPrimarySentinel();
+        MOT::Row* row = txn->RowLookup(atype, sentinel, rc);
+        if (rc != MOT::RC_OK) break;
+        if (row && !cb(row)) break;
+
+        it->Next();
+    }
+
+    if (it) it->Destroy();
+    ix->DestroyKey(lo);
+    ix->DestroyKey(hi);
+    return rc;
+}
+
+// Prefix scan — iterate while the first prefix_len bytes of the key match.
+// Useful for secondary non-unique index style lookups.
+// Callback returns true to continue, false to stop early.
+inline MOT::RC ScanPrefix(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* ix,
+                          MOT::AccessType atype, uint64_t prefix_key, uint16_t prefix_len,
+                          const std::function<bool(MOT::Row*)>& cb, uint32_t pid = 0)
+{
+    MOT::RC rc = MOT::RC_OK;
+
+    MOT::Key* key = ix->CreateNewSearchKey();
+    if (!key) return MOT::RC_MEMORY_ALLOCATION_ERROR;
+    KeyFillU64(key, 0, prefix_key);
+
+    bool found = false;
+    MOT::IndexIterator* it = ix->Search(key, true, true, pid, found);
+
+    while (it != nullptr && it->IsValid()) {
+        MOT::Key* cur = (MOT::Key*)it->GetKey();
+        if (!cur || memcmp(cur->GetKeyBuf(), key->GetKeyBuf(), prefix_len) != 0)
+            break;
+
+        MOT::Sentinel* sentinel = it->GetPrimarySentinel();
+        MOT::Row* row = txn->RowLookup(atype, sentinel, rc);
+        if (rc != MOT::RC_OK) break;
+        if (row && !cb(row)) break;
+
+        it->Next();
+    }
+
+    if (it) it->Destroy();
+    ix->DestroyKey(key);
+    return rc;
 }
 
 // ======================================================================
