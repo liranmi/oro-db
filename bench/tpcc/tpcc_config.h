@@ -45,6 +45,7 @@ enum WH : int {
     W_ZIP,             // char(9)
     W_TAX,             // decimal(4,4) -> double
     W_YTD,             // decimal(12,2) -> double
+    W_ID,              // PK: warehouse id
     W_KEY,             // packed key: PackWhKey(W_ID)
     W_NUM_COLS
 };
@@ -60,6 +61,8 @@ enum DIST : int {
     D_TAX,             // decimal(4,4) -> double
     D_YTD,             // decimal(12,2) -> double
     D_NEXT_O_ID,       // int
+    D_W_ID,            // PK: warehouse id
+    D_ID,              // PK: district id
     D_KEY,             // packed key: PackDistKey(W_ID, D_ID)
     D_NUM_COLS
 };
@@ -84,6 +87,9 @@ enum CUST : int {
     C_PAYMENT_CNT,     // int
     C_DELIVERY_CNT,    // int
     C_DATA,            // varchar(500)
+    C_W_ID,            // PK: warehouse id
+    C_D_ID,            // PK: district id
+    C_ID,              // PK: customer id
     C_KEY,             // packed key: PackCustKey(W_ID, D_ID, C_ID)
     C_NUM_COLS
 };
@@ -118,6 +124,7 @@ enum ORD : int {
     O_CARRIER_ID,      // int, null for open orders
     O_OL_CNT,          // int
     O_ALL_LOCAL,       // int
+    O_ID,              // PK: order id
     O_KEY,             // packed key: PackOrderKey(W_ID, D_ID, O_ID)
     O_NUM_COLS
 };
@@ -132,6 +139,8 @@ enum ORDL : int {
     OL_QUANTITY,        // int
     OL_AMOUNT,         // decimal(6,2) -> double
     OL_DIST_INFO,      // char(24)
+    OL_O_ID,           // PK: order id
+    OL_NUMBER,         // PK: order-line number
     OL_KEY,            // packed key: PackOlKey(W_ID, D_ID, O_ID, OL_NUMBER)
     OL_NUM_COLS
 };
@@ -142,6 +151,7 @@ enum ITEM : int {
     I_NAME,            // varchar(24)
     I_PRICE,           // decimal(5,2) -> double
     I_DATA,            // varchar(50)
+    I_ID,              // PK: item id
     I_KEY,             // packed key: PackItemKey(I_ID)
     I_NUM_COLS
 };
@@ -163,6 +173,8 @@ enum STK : int {
     S_ORDER_CNT,       // int
     S_REMOTE_CNT,      // int
     S_DATA,            // varchar(50)
+    S_W_ID,            // PK: warehouse id
+    S_I_ID,            // PK: item id
     S_KEY,             // packed key: PackStockKey(W_ID, I_ID)
     S_NUM_COLS
 };
@@ -174,16 +186,16 @@ enum STK : int {
 namespace small {
 
 enum WH : int {
-    W_TAX = 0, W_YTD, W_KEY, W_NUM_COLS
+    W_TAX = 0, W_YTD, W_ID, W_KEY, W_NUM_COLS
 };
 
 enum DIST : int {
-    D_TAX = 0, D_YTD, D_NEXT_O_ID, D_KEY, D_NUM_COLS
+    D_TAX = 0, D_YTD, D_NEXT_O_ID, D_W_ID, D_ID, D_KEY, D_NUM_COLS
 };
 
 enum CUST : int {
     C_MIDDLE = 0, C_LAST, C_STATE, C_CREDIT, C_DISCOUNT, C_BALANCE,
-    C_YTD_PAYMENT, C_PAYMENT_CNT, C_KEY, C_NUM_COLS
+    C_YTD_PAYMENT, C_PAYMENT_CNT, C_W_ID, C_D_ID, C_ID, C_KEY, C_NUM_COLS
 };
 
 enum HIST : int {
@@ -195,19 +207,19 @@ enum NORD : int {
 };
 
 enum ORD : int {
-    O_C_ID = 0, O_D_ID, O_W_ID, O_ENTRY_D, O_CARRIER_ID, O_OL_CNT, O_ALL_LOCAL, O_KEY, O_NUM_COLS
+    O_C_ID = 0, O_D_ID, O_W_ID, O_ENTRY_D, O_CARRIER_ID, O_OL_CNT, O_ALL_LOCAL, O_ID, O_KEY, O_NUM_COLS
 };
 
 enum ORDL : int {
-    OL_I_ID = 0, OL_D_ID, OL_W_ID, OL_KEY, OL_NUM_COLS
+    OL_I_ID = 0, OL_D_ID, OL_W_ID, OL_O_ID, OL_NUMBER, OL_KEY, OL_NUM_COLS
 };
 
 enum ITEM : int {
-    I_IM_ID = 0, I_NAME, I_PRICE, I_DATA, I_KEY, I_NUM_COLS
+    I_IM_ID = 0, I_NAME, I_PRICE, I_DATA, I_ID, I_KEY, I_NUM_COLS
 };
 
 enum STK : int {
-    S_QUANTITY = 0, S_REMOTE_CNT, S_KEY, S_NUM_COLS
+    S_QUANTITY = 0, S_REMOTE_CNT, S_W_ID, S_I_ID, S_KEY, S_NUM_COLS
 };
 
 }  // namespace small

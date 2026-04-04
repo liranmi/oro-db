@@ -93,6 +93,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.warehouse->AddColumn("W_ZIP",      10,  F::MOT_TYPE_VARCHAR, false);
     t.warehouse->AddColumn("W_TAX",      8,   F::MOT_TYPE_DOUBLE,  false);
     t.warehouse->AddColumn("W_YTD",      8,   F::MOT_TYPE_DOUBLE,  false);
+    t.warehouse->AddColumn("W_ID",       8,   F::MOT_TYPE_LONG,    false);
     t.warehouse->AddColumn("W_KEY",      8,   F::MOT_TYPE_LONG,    true);
     if (!t.warehouse->InitRowPool()) return false;
     if (!t.warehouse->InitTombStonePool()) return false;
@@ -113,6 +114,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.district->AddColumn("D_TAX",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_YTD",       8,  F::MOT_TYPE_DOUBLE,  false);
     t.district->AddColumn("D_NEXT_O_ID", 8,  F::MOT_TYPE_LONG,    false);
+    t.district->AddColumn("D_W_ID",     8,  F::MOT_TYPE_LONG,    false);
+    t.district->AddColumn("D_ID",       8,  F::MOT_TYPE_LONG,    false);
     t.district->AddColumn("D_KEY",       8,  F::MOT_TYPE_LONG,    true);
     if (!t.district->InitRowPool()) return false;
     if (!t.district->InitTombStonePool()) return false;
@@ -142,6 +145,9 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.customer->AddColumn("C_PAYMENT_CNT", 8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_DELIVERY_CNT",8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_DATA",        501, F::MOT_TYPE_VARCHAR, false);
+    t.customer->AddColumn("C_W_ID",       8,   F::MOT_TYPE_LONG,    false);
+    t.customer->AddColumn("C_D_ID",       8,   F::MOT_TYPE_LONG,    false);
+    t.customer->AddColumn("C_ID",         8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_KEY",         8,   F::MOT_TYPE_LONG,    true);
     if (!t.customer->InitRowPool()) return false;
     if (!t.customer->InitTombStonePool()) return false;
@@ -149,7 +155,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable customer: %s\n", RcToString(rc)); return false; }
     t.ix_customer = MakePrimaryIndex(txn, t.customer, "ix_customer");
     if (!t.ix_customer) return false;
-    // TODO: secondary index ix_customer_last for by-last-name lookup
+    // TODO: secondary index ix_customer_last — needs investigation of BuildKey InternalKey conflict
 
     // ---- HISTORY (Clause 1.3.4) ----
     // No natural PK per spec — use fake primary with surrogate m_rowId
@@ -207,6 +213,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.order_tbl->AddColumn("O_CARRIER_ID", 8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_OL_CNT",     8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_ALL_LOCAL",  8, F::MOT_TYPE_LONG, false);
+    t.order_tbl->AddColumn("O_ID",         8, F::MOT_TYPE_LONG, false);
     t.order_tbl->AddColumn("O_KEY",        8, F::MOT_TYPE_LONG, true);
     if (!t.order_tbl->InitRowPool()) return false;
     if (!t.order_tbl->InitTombStonePool()) return false;
@@ -226,6 +233,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.order_line->AddColumn("OL_QUANTITY",   8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_AMOUNT",     8,  F::MOT_TYPE_DOUBLE,  false);
     t.order_line->AddColumn("OL_DIST_INFO",  25, F::MOT_TYPE_VARCHAR, false);
+    t.order_line->AddColumn("OL_O_ID",      8,  F::MOT_TYPE_LONG,    false);
+    t.order_line->AddColumn("OL_NUMBER",    8,  F::MOT_TYPE_LONG,    false);
     t.order_line->AddColumn("OL_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.order_line->InitRowPool()) return false;
     if (!t.order_line->InitTombStonePool()) return false;
@@ -241,6 +250,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.item->AddColumn("I_NAME",  25, F::MOT_TYPE_VARCHAR, false);
     t.item->AddColumn("I_PRICE", 8,  F::MOT_TYPE_DOUBLE,  false);
     t.item->AddColumn("I_DATA",  51, F::MOT_TYPE_VARCHAR, false);
+    t.item->AddColumn("I_ID",   8,  F::MOT_TYPE_LONG,    false);
     t.item->AddColumn("I_KEY",   8,  F::MOT_TYPE_LONG,    true);
     if (!t.item->InitRowPool()) return false;
     if (!t.item->InitTombStonePool()) return false;
@@ -267,6 +277,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.stock->AddColumn("S_ORDER_CNT",  8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_REMOTE_CNT", 8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_DATA",       51, F::MOT_TYPE_VARCHAR, false);
+    t.stock->AddColumn("S_W_ID",      8,  F::MOT_TYPE_LONG,    false);
+    t.stock->AddColumn("S_I_ID",      8,  F::MOT_TYPE_LONG,    false);
     t.stock->AddColumn("S_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.stock->InitRowPool()) return false;
     if (!t.stock->InitTombStonePool()) return false;
@@ -302,6 +314,7 @@ static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
             memcpy(data + pos, "ORIGINAL", 8);
         }
         SetStringValue(row, ITEM::I_DATA, data);
+        row->SetValue<uint64_t>(ITEM::I_ID, i);
         row->SetInternalKey(ITEM::I_KEY, PackItemKey(i));
         RC rc = t.item->InsertRow(row, txn);
         if (rc != RC_OK) {
@@ -327,6 +340,7 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     rng.RandomNumericString(buf, 9);SetStringValue(row, WH::W_ZIP, buf);
     row->SetValue<double>(WH::W_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
     row->SetValue<double>(WH::W_YTD, 300000.00);
+    row->SetValue<uint64_t>(WH::W_ID, w_id);
     row->SetInternalKey(WH::W_KEY, PackWhKey(w_id));
     t.warehouse->InsertRow(row, txn);
     txn->Commit();
@@ -363,6 +377,8 @@ static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
         row->SetValue<double>(DIST::D_TAX, (double)rng.NextUniform(0, 2000) / 10000.0);
         row->SetValue<double>(DIST::D_YTD, 30000.00);
         row->SetValue<uint64_t>(DIST::D_NEXT_O_ID, ORD_PER_DIST + 1);
+        row->SetValue<uint64_t>(DIST::D_W_ID, w_id);
+        row->SetValue<uint64_t>(DIST::D_ID, d);
         row->SetInternalKey(DIST::D_KEY, PackDistKey(w_id, d));
         t.district->InsertRow(row, txn);
     }
@@ -404,6 +420,9 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         row->SetValue<uint64_t>(CUST::C_DELIVERY_CNT, 0);
         char data[501]; rng.RandomString(data, 300, 500);
         SetStringValue(row, CUST::C_DATA, data);
+        row->SetValue<uint64_t>(CUST::C_W_ID, w_id);
+        row->SetValue<uint64_t>(CUST::C_D_ID, d_id);
+        row->SetValue<uint64_t>(CUST::C_ID, c);
         row->SetInternalKey(CUST::C_KEY, PackCustKey(w_id, d_id, c));
         t.customer->InsertRow(row, txn);
     }
@@ -455,6 +474,7 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
         orow->SetValue<uint64_t>(ORD::O_CARRIER_ID, (o < 2101) ? rng.NextUniform(1, 10) : 0);
         orow->SetValue<uint64_t>(ORD::O_OL_CNT, ol_cnt);
         orow->SetValue<uint64_t>(ORD::O_ALL_LOCAL, 1);
+        orow->SetValue<uint64_t>(ORD::O_ID, o);
         orow->SetInternalKey(ORD::O_KEY, PackOrderKey(w_id, d_id, o));
         t.order_tbl->InsertRow(orow, txn);
 
@@ -481,6 +501,8 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
                 (o < 2101) ? 0.0 : (double)rng.NextUniform(1, 999999) / 100.0);
             char dist_info[25]; rng.RandomString(dist_info, 24, 24);
             SetStringValue(olrow, ORDL::OL_DIST_INFO, dist_info);
+            olrow->SetValue<uint64_t>(ORDL::OL_O_ID, o);
+            olrow->SetValue<uint64_t>(ORDL::OL_NUMBER, ol);
             olrow->SetInternalKey(ORDL::OL_KEY, PackOlKey(w_id, d_id, o, ol));
             t.order_line->InsertRow(olrow, txn);
         }
@@ -510,6 +532,8 @@ static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRan
             memcpy(data + pos, "ORIGINAL", 8);
         }
         SetStringValue(row, STK::S_DATA, data);
+        row->SetValue<uint64_t>(STK::S_W_ID, w_id);
+        row->SetValue<uint64_t>(STK::S_I_ID, i);
         row->SetInternalKey(STK::S_KEY, PackStockKey(w_id, i));
         t.stock->InsertRow(row, txn);
     }

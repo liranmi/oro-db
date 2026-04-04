@@ -77,6 +77,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         orow->SetValue<uint64_t>(ORD::O_CARRIER_ID, 0);
         orow->SetValue<uint64_t>(ORD::O_OL_CNT, p.ol_cnt);
         orow->SetValue<uint64_t>(ORD::O_ALL_LOCAL, p.all_local ? 1 : 0);
+        orow->SetValue<uint64_t>(ORD::O_ID, o_id);
         orow->SetInternalKey(ORD::O_KEY, PackOrderKey(p.w_id, p.d_id, o_id));
         rc = t.order_tbl->InsertRow(orow, txn);
         if (rc != RC_OK) { t.order_tbl->DestroyRow(orow); txn->Rollback(); return rc; }
@@ -139,6 +140,8 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         olrow->SetValue<uint64_t>(ORDL::OL_QUANTITY, ol_quantity);
         olrow->SetValue<double>(ORDL::OL_AMOUNT, (double)ol_quantity * i_price);
         olrow->SetValueVariable(ORDL::OL_DIST_INFO, ol_dist_info, strlen(ol_dist_info) + 1);
+        olrow->SetValue<uint64_t>(ORDL::OL_O_ID, o_id);
+        olrow->SetValue<uint64_t>(ORDL::OL_NUMBER, (uint64_t)(ol + 1));
         olrow->SetInternalKey(ORDL::OL_KEY, PackOlKey(p.w_id, p.d_id, o_id, (uint64_t)(ol + 1)));
         rc = t.order_line->InsertRow(olrow, txn);
         if (rc != RC_OK) { t.order_line->DestroyRow(olrow); txn->Rollback(); return rc; }
