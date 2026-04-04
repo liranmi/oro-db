@@ -236,6 +236,9 @@ void TxnManager::StartTransaction(uint64_t transactionId, int isolationLevel)
     m_transactionId = transactionId;
     m_isolationLevel = static_cast<ISOLATION_LEVEL>(isolationLevel);
     m_state = TxnState::TXN_START;
+    // Start GC session for this transaction — enables epoch-based reclamation.
+    // In production openGauss this is called per-statement by the backend.
+    (void)GcSessionStart();
 }
 
 void TxnManager::StartSubTransaction(uint64_t subTransactionId, int isolationLevel)
@@ -457,6 +460,7 @@ void TxnManager::EndTransaction()
         }
     }
     Cleanup();
+    GcSessionEnd();
 }
 
 void TxnManager::RedoWriteAction(bool isCommit)

@@ -36,11 +36,14 @@ GcLock g_gcGlobalEpochLock;
 
 GcManager* GcManager::allGcManagers = nullptr;
 
+// GC queue parameters: {type, limboSizeLimit, limboSizeLimitHigh, rcuFreeCount}
+// Limits raised from upstream defaults to support standalone single-session workloads
+// where epoch advancement is slower than multi-backend production deployments.
 static GcQueueEntry gcQueuesParams[static_cast<uint8_t>(GC_QUEUE_TYPE::GC_QUEUES)] = {
-    {GC_QUEUE_TYPE::DELETE_QUEUE, 1024, 8388608, 500},
-    {GC_QUEUE_TYPE::VERSION_QUEUE, 102400, 8388608, 1000},
-    {GC_QUEUE_TYPE::UPDATE_COLUMN_QUEUE, 1, 8388608, 100000},
-    {GC_QUEUE_TYPE::GENERIC_QUEUE, 102400, 8388608, 1000}};
+    {GC_QUEUE_TYPE::DELETE_QUEUE, 1024, 8388608, 8000},
+    {GC_QUEUE_TYPE::VERSION_QUEUE, 67108864, 536870912, 1000000},
+    {GC_QUEUE_TYPE::UPDATE_COLUMN_QUEUE, 1, 67108864, 100000},
+    {GC_QUEUE_TYPE::GENERIC_QUEUE, 102400, 8388608, 8000}};
 
 uint64_t GetGlobalEpoch()
 {
