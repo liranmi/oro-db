@@ -156,6 +156,13 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 {
     RC rc = RC_OK;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+
+    // by-last-name requires secondary index (not yet implemented)
+    if (p.by_last_name) {
+        txn->Rollback();
+        return RC_ABORT;
+    }
+
     // SQL: UPDATE WAREHOUSE SET W_YTD += :h_amount
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
@@ -172,23 +179,17 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 
     // Customer lookup
     Row* c_row = nullptr;
-    if (p.by_last_name) {
-        // TODO: by-last-name scan
-        txn->Rollback(); return RC_ABORT;
-    }
     c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
                    PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // SQL: UPDATE CUSTOMER — use UpdateRow to create MVCC draft, then modify draft
+    // SQL: UPDATE CUSTOMER
     double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
-    rc = txn->UpdateRow(c_row, CUST::C_BALANCE, c_balance - p.h_amount);
-    if (rc != RC_OK) { txn->Rollback(); return rc; }
-    Row* c_draft = txn->GetLastAccessedDraft();
+    c_row->SetValue<double>(CUST::C_BALANCE, c_balance - p.h_amount);
     double c_ytd_payment; c_row->GetValue(CUST::C_YTD_PAYMENT, c_ytd_payment);
-    c_draft->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
+    c_row->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
     uint64_t c_payment_cnt; c_row->GetValue(CUST::C_PAYMENT_CNT, c_payment_cnt);
-    c_draft->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
+    c_row->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
 
     // SQL: INSERT INTO HISTORY
     {
