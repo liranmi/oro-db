@@ -29,11 +29,7 @@
 
 using namespace MOT;
 
-// Helper: set a string column value (Row::SetValue(int, char*) is protected)
-static inline void SetStringValue(Row* row, int colId, const char* str)
-{
-    row->SetValueVariable(colId, str, strlen(str) + 1);
-}
+// SetStringValue is defined in tpcc_helper.h (friend of Row)
 
 namespace oro::tpcc {
 

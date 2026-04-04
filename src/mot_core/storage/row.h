@@ -309,6 +309,14 @@ public:
     // allow privileged access to global insertion operator
     friend std::ostream& operator<<(std::ostream& out, const Row& row);
 
+    // Friend helper for setting string column values from benchmark code.
+    // Delegates to the protected SetValue(int, const char*) which uses
+    // the correct field offset and copies the full field size.
+    friend inline void SetStringValue(Row* row, int colId, const char* str)
+    {
+        row->SetValue(colId, str);
+    }
+
     /**
      * @brief Generates a copy of the row (for CALC)
      * @return the ptr of the new row
