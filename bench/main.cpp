@@ -502,6 +502,7 @@ int main(int argc, char* argv[])
 
     // --- Cleanup ---
     printf("\n[5] Cleaning up...\n");
+    engine->OnCurrentThreadEnding();
     MOT::MOTEngine::DestroyInstance();
     printf("    Done.\n");
 
