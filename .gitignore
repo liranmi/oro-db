@@ -1,4 +1,4 @@
-build/
+build*/
 third_party/masstree/.git/
 third_party/masstree/GNUmakefile
 third_party/masstree/config.status

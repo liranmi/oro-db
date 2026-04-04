@@ -211,16 +211,25 @@ public:
                 tmp->m_owner = G_THREAD_ID;
                 tmp->m_objNext = nullptr;
                 COMPILER_BARRIER;
+                MOT_LOG_DEBUG("ObjPool Reserve: reused free pool %p for thread %u (obj_size=%u)",
+                              tmp.Get(), (unsigned)G_THREAD_ID, (unsigned)m_size);
                 return tmp;
             }
         }
 
+        MOT_LOG_DEBUG("ObjPool Reserve: no free pool available, allocating new pool (obj_size=%u, thread=%u)",
+                      (unsigned)m_size, (unsigned)G_THREAD_ID);
         ObjPool* op = ObjPool::GetObjPool(m_size, this, m_type, true);
 
         if (op != nullptr) {
             ADD_TO_LIST(m_listLock, m_objList, op);
             op->m_owner = G_THREAD_ID;
             tmp = op;
+            MOT_LOG_DEBUG("ObjPool Reserve: allocated new pool %p for thread %u (obj_size=%u, capacity=%u)",
+                          op, (unsigned)G_THREAD_ID, (unsigned)m_size, (unsigned)op->m_totalCount);
+        } else {
+            MOT_LOG_ERROR("ObjPool Reserve: FAILED to allocate new pool (obj_size=%u, thread=%u)",
+                          (unsigned)m_size, (unsigned)G_THREAD_ID);
         }
 
         return tmp;
@@ -264,6 +273,8 @@ public:
         ThreadAOP* t = &m_threadAOP[G_THREAD_ID];
 
         if (t->m_nextFree.Get() == nullptr) {
+            MOT_LOG_DEBUG("ObjPool Alloc: thread %u pool exhausted, calling Reserve (obj_size=%u)",
+                          (unsigned)G_THREAD_ID, (unsigned)m_size);
             t->m_nextFree = Reserve();
             if (unlikely(t->m_nextFree.Get() == nullptr)) {  // out of memory
                 MOT_REPORT_ERROR(MOT_ERROR_OOM, "N/A", "Failed to reserve sub-pool in thread %u" PRId16, G_THREAD_ID);
@@ -275,6 +286,8 @@ public:
         t->m_nextFree->Alloc(&data, &state);
 
         if (state == PAS_EMPTY) {
+            MOT_LOG_DEBUG("ObjPool Alloc: pool %p drained (obj_size=%u, thread=%u), next=%p",
+                          t->m_nextFree.Get(), (unsigned)m_size, (unsigned)G_THREAD_ID, opNext.Get());
             t->m_nextFree = opNext;
         }
         return data;

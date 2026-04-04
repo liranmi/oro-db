@@ -145,7 +145,7 @@ bool PopulateData(MOTEngine* engine, YcsbTables& tables,
         // Columns 1..N: random alphanumeric strings
         for (uint32_t f = 0; f < field_count; f++) {
             rng.RandomString(fieldBuf, field_length, field_length);
-            row->SetValueVariable(Col::FIELD_0 + f, fieldBuf, strlen(fieldBuf) + 1);
+            SetStringValue(row, Col::FIELD_0 + f, fieldBuf);
         }
 
         if (InsertAndCommit(txn, tables.usertable, row)) {
