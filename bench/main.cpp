@@ -363,11 +363,13 @@ int main(int argc, char* argv[])
                 uint32_t num_wh = cfg.tpcc_warehouses;
 
                 while (running.load(std::memory_order_relaxed)) {
-                    // Check transaction count limit
+                    // Check transaction count limit (atomic to avoid TOCTOU race)
                     if (cfg.max_txns > 0) {
-                        uint64_t rem = txns_remaining.load(std::memory_order_relaxed);
-                        if (rem == 0) break;
-                        txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                        uint64_t prev = txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                        if (prev == 0) {
+                            txns_remaining.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
                     }
 
                     auto txnType = oro::tpcc::PickTxnType(cfg, rng);
@@ -436,9 +438,11 @@ int main(int argc, char* argv[])
 
                 while (running.load(std::memory_order_relaxed)) {
                     if (cfg.max_txns > 0) {
-                        uint64_t rem = txns_remaining.load(std::memory_order_relaxed);
-                        if (rem == 0) break;
-                        txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                        uint64_t prev = txns_remaining.fetch_sub(1, std::memory_order_relaxed);
+                        if (prev == 0) {
+                            txns_remaining.fetch_add(1, std::memory_order_relaxed);
+                            break;
+                        }
                     }
 
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
