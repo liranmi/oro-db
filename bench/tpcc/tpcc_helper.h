@@ -7,8 +7,10 @@
  */
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include "bench_util.h"
+#include "row.h"
 
 namespace oro::tpcc {
 
@@ -111,6 +113,179 @@ inline MOT::Key* BuildSearchKey(MOT::TxnManager* txn, MOT::Index* ix, uint64_t p
     if (!key) return nullptr;
     key->FillValue(reinterpret_cast<const uint8_t*>(&packed_key), sizeof(uint64_t), 0);
     return key;
+}
+
+// ======================================================================
+// Per-table row debug printers
+//
+// Each function prints all data columns of a row to stderr.
+// String columns are read via the pointer GetValue and printed with
+// a max-length to avoid garbage past the null terminator.
+// ======================================================================
+
+inline void PrintWarehouseRow(MOT::Row* r)
+{
+    uint64_t id; r->GetValue(WH::W_ID, id);
+    double tax, ytd;
+    r->GetValue(WH::W_TAX, tax);
+    r->GetValue(WH::W_YTD, ytd);
+    fprintf(stderr, "WAREHOUSE  W_ID=%lu NAME=%.10s STREET1=%.20s STREET2=%.20s "
+            "CITY=%.20s STATE=%.2s ZIP=%.9s TAX=%.4f YTD=%.2f\n",
+            (unsigned long)id,
+            (const char*)r->GetValue(WH::W_NAME),
+            (const char*)r->GetValue(WH::W_STREET_1),
+            (const char*)r->GetValue(WH::W_STREET_2),
+            (const char*)r->GetValue(WH::W_CITY),
+            (const char*)r->GetValue(WH::W_STATE),
+            (const char*)r->GetValue(WH::W_ZIP),
+            tax, ytd);
+}
+
+inline void PrintDistrictRow(MOT::Row* r)
+{
+    uint64_t id, wid, next_oid;
+    double tax, ytd;
+    r->GetValue(DIST::D_ID, id);
+    r->GetValue(DIST::D_W_ID, wid);
+    r->GetValue(DIST::D_TAX, tax);
+    r->GetValue(DIST::D_YTD, ytd);
+    r->GetValue(DIST::D_NEXT_O_ID, next_oid);
+    fprintf(stderr, "DISTRICT   D_ID=%lu D_W_ID=%lu NAME=%.10s STREET1=%.20s STREET2=%.20s "
+            "CITY=%.20s STATE=%.2s ZIP=%.9s TAX=%.4f YTD=%.2f NEXT_O_ID=%lu\n",
+            (unsigned long)id, (unsigned long)wid,
+            (const char*)r->GetValue(DIST::D_NAME),
+            (const char*)r->GetValue(DIST::D_STREET_1),
+            (const char*)r->GetValue(DIST::D_STREET_2),
+            (const char*)r->GetValue(DIST::D_CITY),
+            (const char*)r->GetValue(DIST::D_STATE),
+            (const char*)r->GetValue(DIST::D_ZIP),
+            tax, ytd, (unsigned long)next_oid);
+}
+
+inline void PrintCustomerRow(MOT::Row* r)
+{
+    uint64_t cid, did, wid, since, pay_cnt, del_cnt;
+    double cred_lim, disc, bal, ytd_pay;
+    r->GetValue(CUST::C_ID, cid);
+    r->GetValue(CUST::C_D_ID, did);
+    r->GetValue(CUST::C_W_ID, wid);
+    r->GetValue(CUST::C_SINCE, since);
+    r->GetValue(CUST::C_CREDIT_LIM, cred_lim);
+    r->GetValue(CUST::C_DISCOUNT, disc);
+    r->GetValue(CUST::C_BALANCE, bal);
+    r->GetValue(CUST::C_YTD_PAYMENT, ytd_pay);
+    r->GetValue(CUST::C_PAYMENT_CNT, pay_cnt);
+    r->GetValue(CUST::C_DELIVERY_CNT, del_cnt);
+    fprintf(stderr, "CUSTOMER   C_ID=%lu C_D_ID=%lu C_W_ID=%lu FIRST=%.16s MIDDLE=%.2s LAST=%.16s "
+            "CREDIT=%.2s CRED_LIM=%.2f DISC=%.4f BAL=%.2f YTD_PAY=%.2f PAY_CNT=%lu DEL_CNT=%lu\n",
+            (unsigned long)cid, (unsigned long)did, (unsigned long)wid,
+            (const char*)r->GetValue(CUST::C_FIRST),
+            (const char*)r->GetValue(CUST::C_MIDDLE),
+            (const char*)r->GetValue(CUST::C_LAST),
+            (const char*)r->GetValue(CUST::C_CREDIT),
+            cred_lim, disc, bal, ytd_pay,
+            (unsigned long)pay_cnt, (unsigned long)del_cnt);
+}
+
+inline void PrintHistoryRow(MOT::Row* r)
+{
+    uint64_t cid, cdid, cwid, did, wid;
+    int64_t date;
+    double amount;
+    r->GetValue(HIST::H_C_ID, cid);
+    r->GetValue(HIST::H_C_D_ID, cdid);
+    r->GetValue(HIST::H_C_W_ID, cwid);
+    r->GetValue(HIST::H_D_ID, did);
+    r->GetValue(HIST::H_W_ID, wid);
+    r->GetValue(HIST::H_DATE, date);
+    r->GetValue(HIST::H_AMOUNT, amount);
+    fprintf(stderr, "HISTORY    H_C_ID=%lu H_C_D_ID=%lu H_C_W_ID=%lu H_D_ID=%lu H_W_ID=%lu "
+            "DATE=%ld AMOUNT=%.2f DATA=%.24s\n",
+            (unsigned long)cid, (unsigned long)cdid, (unsigned long)cwid,
+            (unsigned long)did, (unsigned long)wid,
+            (long)date, amount,
+            (const char*)r->GetValue(HIST::H_DATA));
+}
+
+inline void PrintNewOrderRow(MOT::Row* r)
+{
+    uint64_t oid, did, wid;
+    r->GetValue(NORD::NO_O_ID, oid);
+    r->GetValue(NORD::NO_D_ID, did);
+    r->GetValue(NORD::NO_W_ID, wid);
+    fprintf(stderr, "NEW_ORDER  NO_O_ID=%lu NO_D_ID=%lu NO_W_ID=%lu\n",
+            (unsigned long)oid, (unsigned long)did, (unsigned long)wid);
+}
+
+inline void PrintOrderRow(MOT::Row* r)
+{
+    uint64_t oid, did, wid, cid, carrier, ol_cnt, all_local;
+    int64_t entry_d;
+    r->GetValue(ORD::O_ID, oid);
+    r->GetValue(ORD::O_D_ID, did);
+    r->GetValue(ORD::O_W_ID, wid);
+    r->GetValue(ORD::O_C_ID, cid);
+    r->GetValue(ORD::O_ENTRY_D, entry_d);
+    r->GetValue(ORD::O_CARRIER_ID, carrier);
+    r->GetValue(ORD::O_OL_CNT, ol_cnt);
+    r->GetValue(ORD::O_ALL_LOCAL, all_local);
+    fprintf(stderr, "ORDER      O_ID=%lu O_D_ID=%lu O_W_ID=%lu O_C_ID=%lu "
+            "ENTRY_D=%ld CARRIER=%lu OL_CNT=%lu ALL_LOCAL=%lu\n",
+            (unsigned long)oid, (unsigned long)did, (unsigned long)wid,
+            (unsigned long)cid, (long)entry_d, (unsigned long)carrier,
+            (unsigned long)ol_cnt, (unsigned long)all_local);
+}
+
+inline void PrintOrderLineRow(MOT::Row* r)
+{
+    uint64_t oid, did, wid, num, iid, supply_wid, qty;
+    int64_t del_d;
+    double amount;
+    r->GetValue(ORDL::OL_O_ID, oid);
+    r->GetValue(ORDL::OL_D_ID, did);
+    r->GetValue(ORDL::OL_W_ID, wid);
+    r->GetValue(ORDL::OL_NUMBER, num);
+    r->GetValue(ORDL::OL_I_ID, iid);
+    r->GetValue(ORDL::OL_SUPPLY_W_ID, supply_wid);
+    r->GetValue(ORDL::OL_DELIVERY_D, del_d);
+    r->GetValue(ORDL::OL_QUANTITY, qty);
+    r->GetValue(ORDL::OL_AMOUNT, amount);
+    fprintf(stderr, "ORDER_LINE OL_O_ID=%lu OL_D_ID=%lu OL_W_ID=%lu OL_NUMBER=%lu "
+            "OL_I_ID=%lu SUPPLY_W_ID=%lu DEL_D=%ld QTY=%lu AMOUNT=%.2f DIST=%.24s\n",
+            (unsigned long)oid, (unsigned long)did, (unsigned long)wid,
+            (unsigned long)num, (unsigned long)iid, (unsigned long)supply_wid,
+            (long)del_d, (unsigned long)qty, amount,
+            (const char*)r->GetValue(ORDL::OL_DIST_INFO));
+}
+
+inline void PrintItemRow(MOT::Row* r)
+{
+    uint64_t id, im_id;
+    double price;
+    r->GetValue(ITEM::I_ID, id);
+    r->GetValue(ITEM::I_IM_ID, im_id);
+    r->GetValue(ITEM::I_PRICE, price);
+    fprintf(stderr, "ITEM       I_ID=%lu I_IM_ID=%lu NAME=%.24s PRICE=%.2f DATA=%.50s\n",
+            (unsigned long)id, (unsigned long)im_id,
+            (const char*)r->GetValue(ITEM::I_NAME),
+            price,
+            (const char*)r->GetValue(ITEM::I_DATA));
+}
+
+inline void PrintStockRow(MOT::Row* r)
+{
+    uint64_t iid, wid, qty, ytd, ord_cnt, rem_cnt;
+    r->GetValue(STK::S_I_ID, iid);
+    r->GetValue(STK::S_W_ID, wid);
+    r->GetValue(STK::S_QUANTITY, qty);
+    r->GetValue(STK::S_YTD, ytd);
+    r->GetValue(STK::S_ORDER_CNT, ord_cnt);
+    r->GetValue(STK::S_REMOTE_CNT, rem_cnt);
+    fprintf(stderr, "STOCK      S_I_ID=%lu S_W_ID=%lu QTY=%lu YTD=%lu ORD_CNT=%lu REM_CNT=%lu DATA=%.50s\n",
+            (unsigned long)iid, (unsigned long)wid,
+            (unsigned long)qty, (unsigned long)ytd,
+            (unsigned long)ord_cnt, (unsigned long)rem_cnt,
+            (const char*)r->GetValue(STK::S_DATA));
 }
 
 }  // namespace oro::tpcc
