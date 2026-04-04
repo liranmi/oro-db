@@ -188,11 +188,13 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 
     // SQL: UPDATE CUSTOMER
     double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
-    c_row->SetValue<double>(CUST::C_BALANCE, c_balance - p.h_amount);
+    rc = txn->UpdateRow(c_row, CUST::C_BALANCE, c_balance - p.h_amount);
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
+    Row* c_draft = txn->GetLastAccessedDraft();
     double c_ytd_payment; c_row->GetValue(CUST::C_YTD_PAYMENT, c_ytd_payment);
-    c_row->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
+    c_draft->SetValue<double>(CUST::C_YTD_PAYMENT, c_ytd_payment + p.h_amount);
     uint64_t c_payment_cnt; c_row->GetValue(CUST::C_PAYMENT_CNT, c_payment_cnt);
-    c_row->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
+    c_draft->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
 
     // SQL: INSERT INTO HISTORY
     {
