@@ -264,6 +264,11 @@ int main(int argc, char* argv[])
     // --- Create schema and populate data ---
     printf("[2] Creating schema...\n");
 
+    // Initialize thread-local MOT context for the main thread.
+    // Required by MOT's memory subsystem — without it, thread-local macros
+    // (MOT_GET_CURRENT_CONNECTION_ID, etc.) read uninitialized memory.
+    MOT::ScopedSessionManager scopedMainThread;
+
     // DDL session
     MOT::SessionContext* ddl_session = engine->GetSessionManager()->CreateSessionContext();
     if (!ddl_session) {
@@ -340,6 +345,7 @@ int main(int argc, char* argv[])
         // TPC-C worker threads
         for (uint32_t t = 0; t < cfg.threads; ++t) {
             workers.emplace_back([&, t]() {
+                MOT::ScopedSessionManager scopedWorkerThread;
                 MOT::SessionContext* session = engine->GetSessionManager()->CreateSessionContext();
                 if (!session) {
                     fprintf(stderr, "ERROR: Worker %u failed to create session\n", t);
@@ -414,6 +420,7 @@ int main(int argc, char* argv[])
         // YCSB worker threads
         for (uint32_t t = 0; t < cfg.threads; ++t) {
             workers.emplace_back([&, t]() {
+                MOT::ScopedSessionManager scopedWorkerThread;
                 MOT::SessionContext* session = engine->GetSessionManager()->CreateSessionContext();
                 if (!session) {
                     fprintf(stderr, "ERROR: Worker %u failed to create session\n", t);

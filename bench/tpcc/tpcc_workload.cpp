@@ -578,6 +578,7 @@ struct PopulateArgs {
 
 static void PopulateWarehouseThread(PopulateArgs args)
 {
+    MOT_DECLARE_NON_KERNEL_THREAD();
     SessionContext* session = args.engine->GetSessionManager()->CreateSessionContext();
     if (!session) {
         fprintf(stderr, "ERROR: Failed to create session for W%lu\n", (unsigned long)args.w_id);
