@@ -35,28 +35,51 @@ static Row* Lookup(TxnManager* txn, Table* table, Index* ix,
 
 // Customer by-last-name lookup via sequential scan of C_ID 1..CUST_PER_DIST.
 // Returns the C_ID at the midpoint (sorted by C_FIRST) per Clause 2.5.2.2.
+// Customer by-last-name lookup using the secondary index ix_customer_last.
+// The secondary key is PackCustLastKey(w_id, d_id, last_name_num).
+// Non-unique: multiple customers share the same last name.
+// We iterate all matching rows, sort by C_FIRST, pick midpoint per Clause 2.5.2.2.
 static uint64_t FindCustomerByLastName(TxnManager* txn, const TpccTables& t,
                                         uint64_t w_id, uint64_t d_id,
                                         const char* c_last, RC& rc)
 {
+    uint32_t last_num = LastNameToNum(c_last);
+    uint64_t sec_key_val = PackCustLastKey(w_id, d_id, last_num);
+
+    // Build search key for secondary index
+    Key* skey = BuildSearchKey(txn, t.ix_customer_last, sec_key_val);
+    if (!skey) return 0;
+
+    // Use Index::Search to get a forward iterator at the matching key
+    uint32_t pid = txn->GetThdId();
+    bool found = false;
+    IndexIterator* it = t.ix_customer_last->Search(skey, true, true, pid, found);
+    txn->DestroyTxnKey(skey);
+
     struct Hit { uint64_t c_id; char c_first[17]; };
-    Hit hits[32];  // TPC-C: at most ~30 customers share a last name per district
+    Hit hits[32];
     uint32_t n = 0;
 
-    for (uint64_t c = 1; c <= CUST_PER_DIST && n < 32; c++) {
-        Row* row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
-                          PackCustKey(w_id, d_id, c), rc);
-        if (!row) continue;
-        if (rc != RC_OK) return 0;
-        char buf[17] = {0};
-        memcpy(buf, row->GetValue(CUST::C_LAST), 16);
-        if (strcmp(buf, c_last) == 0) {
-            hits[n].c_id = c;
-            memcpy(hits[n].c_first, row->GetValue(CUST::C_FIRST), 16);
-            hits[n].c_first[16] = '\0';
-            n++;
-        }
+    // Iterate matching sentinel chain — all rows with the same secondary key
+    while (it != nullptr && it->IsValid() && n < 32) {
+        Sentinel* sentinel = it->GetPrimarySentinel();
+        if (!sentinel) break;
+        Row* row = sentinel->GetData();
+        if (!row) { it->Next(); continue; }
+
+        // Verify it's the same key (iterator may advance past our key)
+        uint64_t row_last_key; row->GetValue(CUST::C_LAST_KEY, row_last_key);
+        if (row_last_key != sec_key_val) break;
+
+        uint64_t c_id; row->GetValue(CUST::C_ID, c_id);
+        hits[n].c_id = c_id;
+        memcpy(hits[n].c_first, row->GetValue(CUST::C_FIRST), 16);
+        hits[n].c_first[16] = '\0';
+        n++;
+        it->Next();
     }
+    if (it) { it->Invalidate(); delete it; }
+
     if (n == 0) return 0;
 
     std::sort(hits, hits + n, [](const Hit& a, const Hit& b) {

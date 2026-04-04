@@ -41,10 +41,13 @@ namespace oro::tpcc {
 // Helper: create a primary index on the LAST column of the table.
 // Follows the test_index.cpp pattern: keyLen = raw column size (8 bytes).
 // ======================================================================
-static Index* MakePrimaryIndex(TxnManager* txn, Table* table, const char* name)
+// Create a primary index directly on the table, bypassing DDL transaction path.
+// In standalone mode there is no redo log or concurrent DDL, so we can set up
+// the index and attach it to the table immediately.
+static Index* MakePrimaryIndex(Table* table, const char* name, int keyCol = -1)
 {
-    int lastCol = table->GetFieldCount() - 1;
-    uint32_t keyLen = table->GetFieldSize(lastCol);  // 8 = sizeof(uint64_t)
+    int col = (keyCol >= 0) ? keyCol : (int)(table->GetFieldCount() - 1);
+    uint32_t keyLen = table->GetFieldSize(col);
 
     RC rc = RC_OK;
     Index* ix = IndexFactory::CreateIndexEx(
@@ -60,15 +63,36 @@ static Index* MakePrimaryIndex(TxnManager* txn, Table* table, const char* name)
         return nullptr;
     }
     ix->SetNumIndexFields(1);
-    ix->SetLenghtKeyFields(0, lastCol, keyLen);
-    ix->SetTable(table);
+    ix->SetLenghtKeyFields(0, col, keyLen);
+    ix->SetIsCommited(true);
 
-    rc = txn->CreateIndex(table, ix, true);
-    if (rc != RC_OK) {
-        fprintf(stderr, "ERROR: CreateIndex '%s' failed: %s\n", name, RcToString(rc));
+    // Attach directly — no TxnTable / DDL access needed in standalone
+    table->UpdatePrimaryIndex(ix, nullptr, 0);
+    return ix;
+}
+
+// Create a non-unique secondary index directly on the table.
+static Index* MakeSecondaryIndex(Table* table, const char* name, int keyCol, uint32_t keyLen)
+{
+    RC rc = RC_OK;
+    Index* ix = IndexFactory::CreateIndexEx(
+        IndexOrder::INDEX_ORDER_SECONDARY, IndexingMethod::INDEXING_METHOD_TREE,
+        DEFAULT_TREE_FLAVOR, false, keyLen, name, rc, nullptr);
+    if (!ix || rc != RC_OK) {
+        fprintf(stderr, "ERROR: Failed to create secondary index '%s': %s\n", name, RcToString(rc));
+        return nullptr;
+    }
+    if (!ix->SetNumTableFields(table->GetFieldCount())) {
+        fprintf(stderr, "ERROR: SetNumTableFields failed for '%s'\n", name);
         delete ix;
         return nullptr;
     }
+    ix->SetNumIndexFields(1);
+    ix->SetLenghtKeyFields(0, keyCol, keyLen);
+    ix->SetIsCommited(true);
+    ix->SetTable(table);
+
+    table->AddSecondaryIndexToMetaData(ix);
     return ix;
 }
 
@@ -76,11 +100,17 @@ static Index* MakePrimaryIndex(TxnManager* txn, Table* table, const char* name)
 // Schema creation — Full schema (Clause 1.3)
 // Column order: data columns first, packed _KEY column LAST.
 // ======================================================================
+// Helper: register a table with the engine's table manager
+static bool RegisterTable(Table* table)
+{
+    return MOT::MOTEngine::GetInstance()->GetTableManager()->AddTable(table);
+}
+
 bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
 {
-    using F = MOT_CATALOG_FIELD_TYPES;
-    RC rc;
+    (void)txn;  // DDL transaction not used — tables/indexes created directly
     (void)small_schema;
+    using F = MOT_CATALOG_FIELD_TYPES;
 
     // ---- WAREHOUSE (Clause 1.3.1) ----
     t.warehouse = new Table();
@@ -97,9 +127,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.warehouse->AddColumn("W_KEY",      8,   F::MOT_TYPE_LONG,    true);
     if (!t.warehouse->InitRowPool()) return false;
     if (!t.warehouse->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.warehouse);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable warehouse: %s\n", RcToString(rc)); return false; }
-    t.ix_warehouse = MakePrimaryIndex(txn, t.warehouse, "ix_warehouse");
+    if (!RegisterTable(t.warehouse)) { fprintf(stderr, "CreateTable warehouse failed\n"); return false; }
+    t.ix_warehouse = MakePrimaryIndex(t.warehouse, "ix_warehouse");
     if (!t.ix_warehouse) return false;
 
     // ---- DISTRICT (Clause 1.3.2) ----
@@ -119,9 +148,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.district->AddColumn("D_KEY",       8,  F::MOT_TYPE_LONG,    true);
     if (!t.district->InitRowPool()) return false;
     if (!t.district->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.district);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable district: %s\n", RcToString(rc)); return false; }
-    t.ix_district = MakePrimaryIndex(txn, t.district, "ix_district");
+    if (!RegisterTable(t.district)) { fprintf(stderr, "CreateTable district failed\n"); return false; }
+    t.ix_district = MakePrimaryIndex(t.district, "ix_district");
     if (!t.ix_district) return false;
 
     // ---- CUSTOMER (Clause 1.3.3) ----
@@ -149,13 +177,18 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.customer->AddColumn("C_D_ID",       8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_ID",         8,   F::MOT_TYPE_LONG,    false);
     t.customer->AddColumn("C_KEY",         8,   F::MOT_TYPE_LONG,    true);
+    t.customer->AddColumn("C_LAST_KEY",    8,   F::MOT_TYPE_LONG,    true);
     if (!t.customer->InitRowPool()) return false;
     if (!t.customer->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.customer);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable customer: %s\n", RcToString(rc)); return false; }
-    t.ix_customer = MakePrimaryIndex(txn, t.customer, "ix_customer");
+    if (!RegisterTable(t.customer)) { fprintf(stderr, "CreateTable customer failed\n"); return false; }
+    // InternalKey convention with 2 indexes: second-to-last = primary (C_KEY), last = secondary (C_LAST_KEY).
+    // Both indexes must be registered before any InsertRow so GetNumIndexes()==2.
+    t.ix_customer = MakePrimaryIndex(t.customer, "ix_customer", CUST::C_KEY);
     if (!t.ix_customer) return false;
-    // TODO: secondary index ix_customer_last — needs investigation of BuildKey InternalKey conflict
+    t.ix_customer_last = MakeSecondaryIndex(t.customer, "ix_customer_last", CUST::C_LAST_KEY, sizeof(uint64_t));
+    if (!t.ix_customer_last) return false;
+    // Re-read primary after adding secondary (index array may have shifted)
+    t.ix_customer = t.customer->GetPrimaryIndex();
 
     // ---- HISTORY (Clause 1.3.4) ----
     // No natural PK per spec — use fake primary with surrogate m_rowId
@@ -170,22 +203,20 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.history->AddColumn("H_DATA",   25, F::MOT_TYPE_VARCHAR, false);
     if (!t.history->InitRowPool()) return false;
     if (!t.history->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.history);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable history: %s\n", RcToString(rc)); return false; }
+    if (!RegisterTable(t.history)) { fprintf(stderr, "CreateTable history failed\n"); return false; }
     {
         // Fake primary index — key is the auto-generated surrogate m_rowId
-        uint32_t keyLen = sizeof(uint64_t);  // 8 bytes for surrogate key
+        uint32_t keyLen = sizeof(uint64_t);
         RC irc = RC_OK;
         Index* ix = IndexFactory::CreateIndexEx(
             IndexOrder::INDEX_ORDER_PRIMARY, IndexingMethod::INDEXING_METHOD_TREE,
             DEFAULT_TREE_FLAVOR, true, keyLen, "ix_history", irc, nullptr);
         if (!ix || irc != RC_OK) { fprintf(stderr, "ERROR: ix_history: %s\n", RcToString(irc)); return false; }
         if (!ix->SetNumTableFields(t.history->GetFieldCount())) { delete ix; return false; }
-        ix->SetNumIndexFields(0);  // no user key fields — surrogate
-        ix->SetTable(t.history);
+        ix->SetNumIndexFields(0);
         ix->SetFakePrimary(true);
-        irc = txn->CreateIndex(t.history, ix, true);
-        if (irc != RC_OK) { delete ix; return false; }
+        ix->SetIsCommited(true);
+        t.history->UpdatePrimaryIndex(ix, nullptr, 0);
         t.ix_history = ix;
     }
 
@@ -198,9 +229,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.new_order->AddColumn("NO_KEY",  8, F::MOT_TYPE_LONG, true);
     if (!t.new_order->InitRowPool()) return false;
     if (!t.new_order->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.new_order);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable new_order: %s\n", RcToString(rc)); return false; }
-    t.ix_new_order = MakePrimaryIndex(txn, t.new_order, "ix_new_order");
+    if (!RegisterTable(t.new_order)) { fprintf(stderr, "CreateTable new_order failed\n"); return false; }
+    t.ix_new_order = MakePrimaryIndex(t.new_order, "ix_new_order");
     if (!t.ix_new_order) return false;
 
     // ---- ORDER (Clause 1.3.6) ----
@@ -217,9 +247,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.order_tbl->AddColumn("O_KEY",        8, F::MOT_TYPE_LONG, true);
     if (!t.order_tbl->InitRowPool()) return false;
     if (!t.order_tbl->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.order_tbl);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable oorder: %s\n", RcToString(rc)); return false; }
-    t.ix_order = MakePrimaryIndex(txn, t.order_tbl, "ix_order");
+    if (!RegisterTable(t.order_tbl)) { fprintf(stderr, "CreateTable oorder failed\n"); return false; }
+    t.ix_order = MakePrimaryIndex(t.order_tbl, "ix_order");
     if (!t.ix_order) return false;
 
     // ---- ORDER-LINE (Clause 1.3.7) ----
@@ -238,9 +267,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.order_line->AddColumn("OL_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.order_line->InitRowPool()) return false;
     if (!t.order_line->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.order_line);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable order_line: %s\n", RcToString(rc)); return false; }
-    t.ix_order_line = MakePrimaryIndex(txn, t.order_line, "ix_order_line");
+    if (!RegisterTable(t.order_line)) { fprintf(stderr, "CreateTable order_line failed\n"); return false; }
+    t.ix_order_line = MakePrimaryIndex(t.order_line, "ix_order_line");
     if (!t.ix_order_line) return false;
 
     // ---- ITEM (Clause 1.3.8) ----
@@ -254,9 +282,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.item->AddColumn("I_KEY",   8,  F::MOT_TYPE_LONG,    true);
     if (!t.item->InitRowPool()) return false;
     if (!t.item->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.item);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable item: %s\n", RcToString(rc)); return false; }
-    t.ix_item = MakePrimaryIndex(txn, t.item, "ix_item");
+    if (!RegisterTable(t.item)) { fprintf(stderr, "CreateTable item failed\n"); return false; }
+    t.ix_item = MakePrimaryIndex(t.item, "ix_item");
     if (!t.ix_item) return false;
 
     // ---- STOCK (Clause 1.3.9) ----
@@ -282,9 +309,8 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     t.stock->AddColumn("S_KEY",        8,  F::MOT_TYPE_LONG,    true);
     if (!t.stock->InitRowPool()) return false;
     if (!t.stock->InitTombStonePool()) return false;
-    rc = txn->CreateTable(t.stock);
-    if (rc != RC_OK) { fprintf(stderr, "CreateTable stock: %s\n", RcToString(rc)); return false; }
-    t.ix_stock = MakePrimaryIndex(txn, t.stock, "ix_stock");
+    if (!RegisterTable(t.stock)) { fprintf(stderr, "CreateTable stock failed\n"); return false; }
+    t.ix_stock = MakePrimaryIndex(t.stock, "ix_stock");
     if (!t.ix_stock) return false;
 
     return true;
@@ -399,10 +425,8 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         rng.RandomString(buf, 8, 16); SetStringValue(row, CUST::C_FIRST, buf);
         SetStringValue(row, CUST::C_MIDDLE, "OE");
         char last[17];
-        if (c <= 1000)
-            GenLastName((uint32_t)(c - 1), last, sizeof(last));
-        else
-            GenLastName((uint32_t)NURand(rng, NURAND_C_LAST, 0, 999), last, sizeof(last));
+        uint32_t last_num = (c <= 1000) ? (uint32_t)(c - 1) : (uint32_t)NURand(rng, NURAND_C_LAST, 0, 999);
+        GenLastName(last_num, last, sizeof(last));
         SetStringValue(row, CUST::C_LAST, last);
         rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_1, buf);
         rng.RandomString(buf, 10, 20); SetStringValue(row, CUST::C_STREET_2, buf);
@@ -424,6 +448,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
         row->SetValue<uint64_t>(CUST::C_D_ID, d_id);
         row->SetValue<uint64_t>(CUST::C_ID, c);
         row->SetInternalKey(CUST::C_KEY, PackCustKey(w_id, d_id, c));
+        row->SetValue<uint64_t>(CUST::C_LAST_KEY, PackCustLastKey(w_id, d_id, last_num));
         t.customer->InsertRow(row, txn);
     }
     txn->Commit();

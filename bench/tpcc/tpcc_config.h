@@ -90,7 +90,8 @@ enum CUST : int {
     C_W_ID,            // PK: warehouse id
     C_D_ID,            // PK: district id
     C_ID,              // PK: customer id
-    C_KEY,             // packed key: PackCustKey(W_ID, D_ID, C_ID)
+    C_KEY,             // packed primary key: PackCustKey(W_ID, D_ID, C_ID)
+    C_LAST_KEY,        // packed secondary key: PackCustLastKey(W_ID, D_ID, last_num)
     C_NUM_COLS
 };
 
@@ -195,7 +196,7 @@ enum DIST : int {
 
 enum CUST : int {
     C_MIDDLE = 0, C_LAST, C_STATE, C_CREDIT, C_DISCOUNT, C_BALANCE,
-    C_YTD_PAYMENT, C_PAYMENT_CNT, C_W_ID, C_D_ID, C_ID, C_KEY, C_NUM_COLS
+    C_YTD_PAYMENT, C_PAYMENT_CNT, C_W_ID, C_D_ID, C_ID, C_KEY, C_LAST_KEY, C_NUM_COLS
 };
 
 enum HIST : int {
