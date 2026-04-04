@@ -91,6 +91,31 @@ inline uint64_t PackStockKey(uint64_t w_id, uint64_t i_id) {
 // Item: I_ID
 inline uint64_t PackItemKey(uint64_t i_id) { return i_id; }
 
+// Customer secondary key: (W_ID, D_ID, last_name_num)
+// last_name_num is 0-999 from GenLastName syllable table
+inline uint64_t PackCustLastKey(uint64_t w_id, uint64_t d_id, uint64_t last_num) {
+    return (w_id << 40) | (d_id << 20) | last_num;
+}
+
+// Reverse-map C_LAST string to its 0-999 number.
+// GenLastName maps num -> syllable1+syllable2+syllable3 where each digit selects a syllable.
+inline uint32_t LastNameToNum(const char* last)
+{
+    uint32_t digits[3] = {0, 0, 0};
+    const char* p = last;
+    for (int pos = 0; pos < 3 && *p; pos++) {
+        for (uint32_t s = 0; s < 10; s++) {
+            size_t slen = strlen(LAST_NAME_SYLLABLES[s]);
+            if (strncmp(p, LAST_NAME_SYLLABLES[s], slen) == 0) {
+                digits[pos] = s;
+                p += slen;
+                break;
+            }
+        }
+    }
+    return digits[0] * 100 + digits[1] * 10 + digits[2];
+}
+
 // History: surrogate (auto-increment)
 static std::atomic<uint64_t> g_history_surr_key{1ULL << 48};
 inline uint64_t NextHistoryKey() {

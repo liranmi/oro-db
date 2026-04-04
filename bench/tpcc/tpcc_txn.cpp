@@ -2,10 +2,6 @@
  * TPC-C Transaction Implementations for oro-db.
  *
  * All 5 transactions per TPC-C Standard Specification Rev 5.11, Clauses 2.4–2.8.
- * Each function includes the exact SQL it implements as comments.
- *
- * Key pattern: all lookups use BuildSearchKey(txn, ix, PackXxxKey(...))
- * which allocates from the transaction's key pool (GetTxnKey/DestroyTxnKey).
  */
 
 #include "tpcc_txn.h"
@@ -37,6 +33,38 @@ static Row* Lookup(TxnManager* txn, Table* table, Index* ix,
     return row;
 }
 
+// Customer by-last-name lookup via sequential scan of C_ID 1..CUST_PER_DIST.
+// Returns the C_ID at the midpoint (sorted by C_FIRST) per Clause 2.5.2.2.
+static uint64_t FindCustomerByLastName(TxnManager* txn, const TpccTables& t,
+                                        uint64_t w_id, uint64_t d_id,
+                                        const char* c_last, RC& rc)
+{
+    struct Hit { uint64_t c_id; char c_first[17]; };
+    Hit hits[32];  // TPC-C: at most ~30 customers share a last name per district
+    uint32_t n = 0;
+
+    for (uint64_t c = 1; c <= CUST_PER_DIST && n < 32; c++) {
+        Row* row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
+                          PackCustKey(w_id, d_id, c), rc);
+        if (!row) continue;
+        if (rc != RC_OK) return 0;
+        char buf[17] = {0};
+        memcpy(buf, row->GetValue(CUST::C_LAST), 16);
+        if (strcmp(buf, c_last) == 0) {
+            hits[n].c_id = c;
+            memcpy(hits[n].c_first, row->GetValue(CUST::C_FIRST), 16);
+            hits[n].c_first[16] = '\0';
+            n++;
+        }
+    }
+    if (n == 0) return 0;
+
+    std::sort(hits, hits + n, [](const Hit& a, const Hit& b) {
+        return strcmp(a.c_first, b.c_first) < 0;
+    });
+    return hits[(n - 1) / 2].c_id;
+}
+
 // ======================================================================
 // 1. NewOrder — Clause 2.4
 // ======================================================================
@@ -46,12 +74,10 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     (void)rng;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
-    // SQL: SELECT W_TAX FROM WAREHOUSE WHERE W_ID = :w_id
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double w_tax; w_row->GetValue(WH::W_TAX, w_tax);
 
-    // SQL: SELECT/UPDATE D_NEXT_O_ID FROM DISTRICT
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD_FOR_UPDATE,
                         PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
@@ -61,12 +87,11 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     if (rc != RC_OK) { txn->Rollback(); return rc; }
     uint64_t o_id = d_next_o_id;
 
-    // SQL: SELECT C_DISCOUNT FROM CUSTOMER
     Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
                         PackCustKey(p.w_id, p.d_id, p.c_id), rc);
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // SQL: INSERT INTO ORDERS
+    // INSERT ORDER
     {
         Row* orow = t.order_tbl->CreateNewRow();
         if (!orow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
@@ -83,7 +108,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         if (rc != RC_OK) { t.order_tbl->DestroyRow(orow); txn->Rollback(); return rc; }
     }
 
-    // SQL: INSERT INTO NEW_ORDER
+    // INSERT NEW_ORDER
     {
         Row* norow = t.new_order->CreateNewRow();
         if (!norow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
@@ -95,18 +120,15 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         if (rc != RC_OK) { t.new_order->DestroyRow(norow); txn->Rollback(); return rc; }
     }
 
-    // For each order-line
     for (uint32_t ol = 0; ol < p.ol_cnt; ol++) {
         uint64_t ol_i_id = p.items[ol].ol_i_id;
         uint64_t ol_supply_w_id = p.items[ol].ol_supply_w_id;
         uint64_t ol_quantity = p.items[ol].ol_quantity;
 
-        // SQL: SELECT FROM ITEM
         Row* i_row = Lookup(txn, t.item, t.ix_item, AccessType::RD, PackItemKey(ol_i_id), rc);
-        if (!i_row) { txn->Rollback(); return RC_OK; }  // 1% invalid item rollback
+        if (!i_row) { txn->Rollback(); return RC_OK; }
         double i_price; i_row->GetValue(ITEM::I_PRICE, i_price);
 
-        // SQL: SELECT/UPDATE STOCK
         Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD_FOR_UPDATE,
                             PackStockKey(ol_supply_w_id, ol_i_id), rc);
         if (!s_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
@@ -129,7 +151,6 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         char ol_dist_info[25] = {0};
         memcpy(ol_dist_info, s_row->GetValue(STK::S_DIST_01 + (int)(p.d_id - 1)), 24);
 
-        // SQL: INSERT INTO ORDER_LINE
         Row* olrow = t.order_line->CreateNewRow();
         if (!olrow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
         olrow->SetValue<uint64_t>(ORDL::OL_I_ID, ol_i_id);
@@ -160,33 +181,31 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     RC rc = RC_OK;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
-    // by-last-name requires secondary index (not yet implemented)
-    if (p.by_last_name) {
-        txn->Rollback();
-        return RC_ABORT;
-    }
-
-    // SQL: UPDATE WAREHOUSE SET W_YTD += :h_amount
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double w_ytd; w_row->GetValue(WH::W_YTD, w_ytd);
     rc = txn->UpdateRow(w_row, WH::W_YTD, w_ytd + p.h_amount);
     if (rc != RC_OK) { txn->Rollback(); return rc; }
 
-    // SQL: UPDATE DISTRICT SET D_YTD += :h_amount
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD_FOR_UPDATE, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double d_ytd; d_row->GetValue(DIST::D_YTD, d_ytd);
     rc = txn->UpdateRow(d_row, DIST::D_YTD, d_ytd + p.h_amount);
     if (rc != RC_OK) { txn->Rollback(); return rc; }
 
-    // Customer lookup
+    // Customer lookup — by ID or by last name (Clause 2.5.2.2)
     Row* c_row = nullptr;
-    c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
-                   PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
+    if (p.by_last_name) {
+        uint64_t c_id = FindCustomerByLastName(txn, t, p.c_w_id, p.c_d_id, p.c_last, rc);
+        if (c_id == 0 || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
+                       PackCustKey(p.c_w_id, p.c_d_id, c_id), rc);
+    } else {
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
+                       PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
+    }
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // SQL: UPDATE CUSTOMER
     double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
     c_row->SetValue<double>(CUST::C_BALANCE, c_balance - p.h_amount);
     double c_ytd_payment; c_row->GetValue(CUST::C_YTD_PAYMENT, c_ytd_payment);
@@ -194,7 +213,7 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     uint64_t c_payment_cnt; c_row->GetValue(CUST::C_PAYMENT_CNT, c_payment_cnt);
     c_row->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
 
-    // SQL: INSERT INTO HISTORY
+    // INSERT HISTORY
     {
         Row* hrow = t.history->CreateNewRow();
         if (!hrow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
@@ -209,7 +228,6 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
         char d_name[11] = {0}; memcpy(d_name, d_row->GetValue(DIST::D_NAME), 10);
         snprintf(h_data, sizeof(h_data), "%.10s    %.10s", w_name, d_name);
         hrow->SetValueVariable(HIST::H_DATA, h_data, strlen(h_data) + 1);
-        // Fake primary: surrogate key auto-generated by Table::InsertRow
         rc = t.history->InsertRow(hrow, txn);
         if (rc != RC_OK) { t.history->DestroyRow(hrow); txn->Rollback(); return rc; }
     }
@@ -227,15 +245,39 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
     RC rc = RC_OK;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
-    if (p.by_last_name) { txn->Rollback(); return RC_ABORT; }
-
+    // Customer lookup
+    uint64_t cust_id = p.c_id;
+    if (p.by_last_name) {
+        cust_id = FindCustomerByLastName(txn, t, p.w_id, p.d_id, p.c_last, rc);
+        if (cust_id == 0 || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+    }
     Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
-                        PackCustKey(p.w_id, p.d_id, p.c_id), rc);
+                        PackCustKey(p.w_id, p.d_id, cust_id), rc);
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // Find latest order for this customer using point lookups
-    // (reverse scan via iterator not yet working with packed keys)
-    // Read a few order-lines for the last known order
+    // Find latest order for this customer: scan backwards from D_NEXT_O_ID
+    Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD,
+                        PackDistKey(p.w_id, p.d_id), rc);
+    if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+    uint64_t d_next_o_id; d_row->GetValue(DIST::D_NEXT_O_ID, d_next_o_id);
+
+    uint64_t found_o_id = 0;
+    for (uint64_t oid = d_next_o_id - 1; oid >= 1; oid--) {
+        Row* orow = Lookup(txn, t.order_tbl, t.ix_order, AccessType::RD,
+                           PackOrderKey(p.w_id, p.d_id, oid), rc);
+        if (!orow) break;
+        uint64_t o_c_id; orow->GetValue(ORD::O_C_ID, o_c_id);
+        if (o_c_id == cust_id) { found_o_id = oid; break; }
+    }
+
+    if (found_o_id > 0) {
+        for (uint64_t ol = 1; ol <= MAX_OL_CNT; ol++) {
+            Row* olrow = Lookup(txn, t.order_line, t.ix_order_line, AccessType::RD,
+                                PackOlKey(p.w_id, p.d_id, found_o_id, ol), rc);
+            if (!olrow) break;
+        }
+    }
+
     rc = txn->Commit();
     txn->EndTransaction();
     return rc;
@@ -250,12 +292,60 @@ RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
     for (uint64_t d_id = 1; d_id <= DIST_PER_WARE; d_id++) {
-        // Find oldest new-order via point lookup (scan TODO)
-        // Update order carrier, sum order-line amounts, update customer balance
-        // For now: just read district to exercise the path
         Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD,
                             PackDistKey(p.w_id, d_id), rc);
-        (void)d_row;
+        if (!d_row || rc != RC_OK) continue;
+        uint64_t d_next_o_id; d_row->GetValue(DIST::D_NEXT_O_ID, d_next_o_id);
+
+        // Find oldest new-order via point lookups (start from reasonable lower bound)
+        uint64_t no_o_id = 0;
+        uint64_t scan_lo = (d_next_o_id > ORD_PER_DIST) ? (d_next_o_id - ORD_PER_DIST) : 1;
+        for (uint64_t oid = scan_lo; oid < d_next_o_id; oid++) {
+            Row* norow = Lookup(txn, t.new_order, t.ix_new_order, AccessType::RD,
+                                PackOrderKey(p.w_id, d_id, oid), rc);
+            if (norow) { no_o_id = oid; break; }
+        }
+        if (no_o_id == 0) continue;
+
+        // Delete the new-order row
+        Row* no_del = Lookup(txn, t.new_order, t.ix_new_order, AccessType::RD_FOR_UPDATE,
+                             PackOrderKey(p.w_id, d_id, no_o_id), rc);
+        if (!no_del || rc != RC_OK) continue;
+        rc = txn->DeleteLastRow();
+        if (rc != RC_OK) continue;
+
+        // Update order: set carrier_id
+        Row* orow = Lookup(txn, t.order_tbl, t.ix_order, AccessType::RD_FOR_UPDATE,
+                           PackOrderKey(p.w_id, d_id, no_o_id), rc);
+        if (!orow || rc != RC_OK) continue;
+        uint64_t o_c_id; orow->GetValue(ORD::O_C_ID, o_c_id);
+        rc = txn->UpdateRow(orow, ORD::O_CARRIER_ID, p.o_carrier_id);
+        if (rc != RC_OK) continue;
+
+        // Sum order-line amounts, set delivery date
+        double ol_total = 0.0;
+        uint64_t now = (uint64_t)time(nullptr);
+        uint64_t o_ol_cnt; orow->GetValue(ORD::O_OL_CNT, o_ol_cnt);
+        for (uint64_t ol = 1; ol <= o_ol_cnt; ol++) {
+            Row* olrow = Lookup(txn, t.order_line, t.ix_order_line, AccessType::RD_FOR_UPDATE,
+                                PackOlKey(p.w_id, d_id, no_o_id, ol), rc);
+            if (!olrow || rc != RC_OK) break;
+            double ol_amount; olrow->GetValue(ORDL::OL_AMOUNT, ol_amount);
+            ol_total += ol_amount;
+            rc = txn->UpdateRow(olrow, ORDL::OL_DELIVERY_D, now);
+            if (rc != RC_OK) break;
+        }
+
+        // Update customer balance and delivery count
+        Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
+                            PackCustKey(p.w_id, d_id, o_c_id), rc);
+        if (!c_row || rc != RC_OK) continue;
+        double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
+        rc = txn->UpdateRow(c_row, CUST::C_BALANCE, c_balance + ol_total);
+        if (rc != RC_OK) continue;
+        Row* c_draft = txn->GetLastAccessedDraft();
+        uint64_t c_delivery_cnt; c_row->GetValue(CUST::C_DELIVERY_CNT, c_delivery_cnt);
+        c_draft->SetValue<uint64_t>(CUST::C_DELIVERY_CNT, c_delivery_cnt + 1);
     }
 
     rc = txn->Commit();
@@ -275,7 +365,6 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     uint64_t d_next_o_id; d_row->GetValue(DIST::D_NEXT_O_ID, d_next_o_id);
 
-    // Check stock for recent order-lines via point lookups
     uint64_t o_id_low = (d_next_o_id > 20) ? (d_next_o_id - 20) : 1;
     uint64_t item_ids[20 * MAX_OL_CNT];
     uint32_t item_count = 0;
@@ -293,8 +382,7 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
 
     uint64_t low_stock = 0;
     for (uint32_t i = 0; i < unique_count; i++) {
-        uint64_t i_id = item_ids[i];
-        Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, i_id), rc);
+        Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, item_ids[i]), rc);
         if (!s_row) continue;
         uint64_t sq; s_row->GetValue(STK::S_QUANTITY, sq);
         if (sq < p.threshold) low_stock++;
