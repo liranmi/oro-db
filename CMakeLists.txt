@@ -17,6 +17,7 @@ endif()
 # Options
 option(ORO_BUILD_BENCH "Build the micro-benchmark" ON)
 option(ORO_WITH_NUMA "Enable NUMA support (requires libnuma)" OFF)
+option(ORO_MEMORY_DEBUG "Enable memory debug instrumentation (canaries, bounds checks, stats)" OFF)
 
 # =============================================================================
 # Masstree
@@ -110,6 +111,10 @@ if(ORO_HAS_MASSTREE)
     target_compile_definitions(oro PUBLIC ORO_HAS_MASSTREE=1)
 endif()
 
+if(ORO_MEMORY_DEBUG)
+    target_compile_definitions(oro PUBLIC ORO_MEMORY_DEBUG=1)
+endif()
+
 # Suppress warnings for vendored code
 target_compile_options(oro PRIVATE
     -Wno-unused-variable
@@ -197,5 +202,6 @@ message(STATUS "  Masstree:      ${ORO_HAS_MASSTREE}")
 message(STATUS "  NUMA support:  ${ORO_WITH_NUMA}")
 message(STATUS "  Benchmark:     ${ORO_BUILD_BENCH}")
 message(STATUS "  Tests:         ${ORO_BUILD_TESTS}")
+message(STATUS "  Memory debug:  ${ORO_MEMORY_DEBUG}")
 message(STATUS "============================")
 message(STATUS "")

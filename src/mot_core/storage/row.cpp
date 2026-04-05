@@ -159,6 +159,16 @@ void Row::SetValueVariable(int id, const void* ptr, uint32_t size)
 {
     const uint64_t fieldSize = m_table->GetFieldSize(id);
     MOT_ASSERT(size < fieldSize);
+#ifdef ORO_MEMORY_DEBUG
+    // Note: this function uses fieldSize as offset — known issue for FDW path.
+    // Benchmark code should use SetStringValue (friend) instead.
+    if (fieldSize + size > m_table->GetTupleSize()) {
+        fprintf(stderr, "ORO_MEMORY_DEBUG: SetValueVariable OOB! col=%d fieldSize=%lu writeSize=%u tupleSize=%u\n",
+                id, (unsigned long)fieldSize, size, (unsigned)m_table->GetTupleSize());
+        fflush(stderr);
+        abort();
+    }
+#endif
     errno_t erc = memcpy_s(&m_data[fieldSize], fieldSize, ptr, size);
     securec_check(erc, "\0", "\0");
 }

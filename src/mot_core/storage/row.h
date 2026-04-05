@@ -520,6 +520,15 @@ public:
             !std::is_pointer<T>::value, "Template setValue method must be passed non-pointer second argument");
         uint64_t dataSize;
         uint64_t pos = GetSetValuePosition(colId, dataSize);
+#ifdef ORO_MEMORY_DEBUG
+        if (pos + dataSize > m_table->GetTupleSize()) {
+            fprintf(stderr, "ORO_MEMORY_DEBUG: SetValue<T> OOB! col=%d pos=%lu size=%lu tupleSize=%u\n",
+                    colId, (unsigned long)pos, (unsigned long)dataSize,
+                    (unsigned)m_table->GetTupleSize());
+            fflush(stderr);
+            abort();
+        }
+#endif
         uint8_t* p = &m_data[pos];
         if (__builtin_expect(dataSize == sizeof(T), 1)) {
             *(reinterpret_cast<T*>(p)) = value;
@@ -736,6 +745,15 @@ protected:
     {
         uint64_t dataSize;
         uint64_t pos = GetSetValuePosition(colId, dataSize);
+#ifdef ORO_MEMORY_DEBUG
+        if (pos + dataSize > m_table->GetTupleSize()) {
+            fprintf(stderr, "ORO_MEMORY_DEBUG: SetValue(char*) OOB! col=%d pos=%lu size=%lu tupleSize=%u\n",
+                    colId, (unsigned long)pos, (unsigned long)dataSize,
+                    (unsigned)m_table->GetTupleSize());
+            fflush(stderr);
+            abort();
+        }
+#endif
         errno_t erc = memcpy_s(&m_data[pos], dataSize, value, dataSize);
         securec_check(erc, "\0", "\0");
     }

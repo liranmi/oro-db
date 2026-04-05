@@ -52,6 +52,34 @@ namespace MOT {
 #define NOT_VALID (uint8_t)(-1)
 #define G_THREAD_ID ((int16_t)MOTCurrThreadId)
 #define OBJ_INDEX_SIZE 1
+
+#ifdef ORO_MEMORY_DEBUG
+static constexpr uint32_t ORO_CANARY_SIZE = 8;
+static constexpr uint64_t ORO_CANARY_MAGIC = 0xCAFEBABEDEADFACEULL;
+
+inline void OroCanaryWrite(void* obj, uint32_t usableSize)
+{
+    // Leading canary: 8 bytes before the object
+    *(uint64_t*)((uint8_t*)obj - ORO_CANARY_SIZE) = ORO_CANARY_MAGIC;
+    // Trailing canary: 8 bytes after the usable area (before oix byte)
+    *(uint64_t*)((uint8_t*)obj + usableSize) = ORO_CANARY_MAGIC;
+}
+
+inline void OroCanaryCheck(void* obj, uint32_t usableSize, uint8_t oix, void* pool)
+{
+    uint64_t leading = *(uint64_t*)((uint8_t*)obj - ORO_CANARY_SIZE);
+    uint64_t trailing = *(uint64_t*)((uint8_t*)obj + usableSize);
+    if (leading != ORO_CANARY_MAGIC || trailing != ORO_CANARY_MAGIC) {
+        fprintf(stderr, "ORO_MEMORY_DEBUG: canary violation! obj=%p oix=%u pool=%p "
+                "leading=0x%lx trailing=0x%lx (expected 0x%lx)\n",
+                obj, (unsigned)oix, pool,
+                (unsigned long)leading, (unsigned long)trailing,
+                (unsigned long)ORO_CANARY_MAGIC);
+        fflush(stderr);
+        abort();
+    }
+}
+#endif
 #define MIN_CHUNK_REQUIRED 2
 #define MEM_CHUNK_SIZE_BYTES K2B(K2B(MEM_CHUNK_SIZE_MB))
 
@@ -59,6 +87,8 @@ namespace MOT {
 #define MEMCHECK_OBJPOOL_SIZE 16
 #define MEMCHECK_METAINFO_SIZE 8
 #define OBJ_GET_REAL_PTR(ptr) (uint8_t*)(*(uint64_t*)((uint8_t*)(ptr) - MEMCHECK_METAINFO_SIZE))
+#elif defined(ORO_MEMORY_DEBUG)
+#define OBJ_GET_REAL_PTR(ptr) ((uint8_t*)(ptr) - ORO_CANARY_SIZE)
 #else
 #define OBJ_GET_REAL_PTR(ptr) (uint8_t*)(ptr)
 #endif
@@ -450,6 +480,11 @@ public:
         if (m_freeCount == 0) {
             *state = PAS_EMPTY;
         }
+#ifdef ORO_MEMORY_DEBUG
+        // Offset past leading canary, write both canaries
+        *ret = (uint8_t*)(*ret) + ORO_CANARY_SIZE;
+        OroCanaryWrite(*ret, m_parent->m_size - 2 * ORO_CANARY_SIZE - OBJ_INDEX_SIZE);
+#endif
 #ifdef ENABLE_MEMORY_CHECK
         AllocForMemCheck(ret);
 #endif
@@ -469,6 +504,10 @@ public:
         if (c == 0) {
             *state = PAS_EMPTY;
         }
+#ifdef ORO_MEMORY_DEBUG
+        *ret = (uint8_t*)(*ret) + ORO_CANARY_SIZE;
+        OroCanaryWrite(*ret, m_parent->m_size - 2 * ORO_CANARY_SIZE - OBJ_INDEX_SIZE);
+#endif
 #ifdef ENABLE_MEMORY_CHECK
         AllocForMemCheck(ret);
 #endif
