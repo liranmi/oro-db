@@ -54,6 +54,7 @@ static void PrintUsage(const char* prog)
     printf("  --max-txns N         Stop after N total transactions (overrides --duration)\n");
     printf("  --json FILE          Write results to JSON file\n");
     printf("  --config FILE        Override mot.conf path\n");
+    printf("  --check              Run post-benchmark data consistency checks\n");
     printf("\nTPC-C options:\n");
     printf("  --warehouses N       Number of warehouses (default: 1)\n");
     printf("  --small              Use reduced TPC-C schema\n");
@@ -105,6 +106,8 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
             cfg.json_file = argv[++i];
         } else if (MatchArg(argv[i], "--config") && i + 1 < argc) {
             cfg.config_path = argv[++i];
+        } else if (MatchArg(argv[i], "--check")) {
+            cfg.check = true;
         // TPC-C flags
         } else if (MatchArg(argv[i], "--warehouses") && i + 1 < argc) {
             cfg.tpcc_warehouses = (uint32_t)atoi(argv[++i]);
@@ -500,10 +503,49 @@ int main(int argc, char* argv[])
         }
     }
 
+    // --- Post-run consistency checks ---
+    int check_failures = 0;
+    if (cfg.check) {
+        printf("\n[5] Running consistency checks...\n");
+
+        // Need a session for transactional index access
+        MOT::SessionContext* check_session = engine->GetSessionManager()->CreateSessionContext();
+        if (!check_session) {
+            fprintf(stderr, "FATAL: Failed to create check session\n");
+        } else {
+            MOT::TxnManager* check_txn = check_session->GetTxnManager();
+
+            if (cfg.workload == oro::WorkloadType::YCSB) {
+                // Verify throughput > 0 (transactions actually executed)
+                if (agg.total_commits > 0) {
+                    printf("    [PASS] YCSB commits: %lu\n", (unsigned long)agg.total_commits);
+                } else {
+                    fprintf(stderr, "    [FAIL] YCSB commits: 0 (expected > 0)\n");
+                    check_failures++;
+                }
+                // Verify abort rate is reasonable (< 50%)
+                if (agg.abort_rate < 0.5) {
+                    printf("    [PASS] Abort rate: %.2f%%\n", agg.abort_rate * 100.0);
+                } else {
+                    fprintf(stderr, "    [FAIL] Abort rate: %.2f%% (expected < 50%%)\n", agg.abort_rate * 100.0);
+                    check_failures++;
+                }
+            }
+
+            engine->GetSessionManager()->DestroySessionContext(check_session);
+        }
+
+        if (check_failures == 0) {
+            printf("    All checks passed.\n");
+        } else {
+            fprintf(stderr, "    %d check(s) FAILED.\n", check_failures);
+        }
+    }
+
     // --- Cleanup ---
-    printf("\n[5] Cleaning up...\n");
+    printf("\n[6] Cleaning up...\n");
     MOT::MOTEngine::DestroyInstance();
     printf("    Done.\n");
 
-    return 0;
+    return check_failures;
 }

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Index tests
+        run: ./build/oro_test_index
+
+      - name: YCSB Profile A (update heavy)
+        run: ./build/oro_bench --workload ycsb --profile A --threads 2 --records 100000 --check
+
+      - name: YCSB Profile B (read mostly)
+        run: ./build/oro_bench --workload ycsb --profile B --threads 2 --records 100000 --check
+
+      - name: YCSB Profile C (read only)
+        run: ./build/oro_bench --workload ycsb --profile C --threads 2 --records 100000 --check
+
+      - name: YCSB Profile D (read latest)
+        run: ./build/oro_bench --workload ycsb --profile D --threads 2 --records 100000 --check
+
+      - name: YCSB Profile E (short ranges)
+        run: ./build/oro_bench --workload ycsb --profile E --threads 2 --records 100000 --check
+
+      - name: YCSB Profile F (read-modify-write)
+        run: ./build/oro_bench --workload ycsb --profile F --threads 2 --records 100000 --check

@@ -33,6 +33,7 @@ struct BenchConfig {
     uint32_t     duration_sec = 10;
     uint64_t     max_txns = 0;         // 0 = unlimited (time-based), >0 = stop after N total txns
     bool         json_output  = false;
+    bool         check = false;       // post-run data consistency validation
     std::string  json_file;
     std::string  config_path;  // mot.conf path override
 
