@@ -981,6 +981,15 @@ private:
     /** @var row_pool personal row allocator object pool */
     ObjAllocInterface* m_tombStonePool;
 
+#ifdef ORO_MEMORY_DEBUG
+public:
+    std::atomic<uint64_t> m_dbgRowAllocCount{0};
+    std::atomic<uint64_t> m_dbgRowFreeCount{0};
+    std::atomic<uint64_t> m_dbgDraftAllocCount{0};
+    std::atomic<uint64_t> m_dbgDraftFreeCount{0};
+private:
+#endif
+
     // we have only index-organized-tables (IOT) so this is the pointer to the index
     // representing the table
     /** @var The primary index holding all rows. */

@@ -16,6 +16,7 @@
 #include "index_iterator.h"
 #include "sentinel.h"
 #include "txn.h"
+#include "mm_gc_manager.h"
 
 namespace oro::tpcc {
 
@@ -389,6 +390,36 @@ inline void PrintStockRow(MOT::Row* r)
             (unsigned long)ord_cnt, (unsigned long)rem_cnt,
             (const char*)r->GetValue(STK::S_DATA));
 }
+
+// ======================================================================
+// Memory debug helpers (ORO_MEMORY_DEBUG only)
+// ======================================================================
+#ifdef ORO_MEMORY_DEBUG
+inline void PrintTableMemoryStats(MOT::Table* t, const char* name)
+{
+    fprintf(stderr, "MEMSTATS %-14s  rows: alloc=%lu free=%lu net=%ld  drafts: alloc=%lu free=%lu net=%ld\n",
+            name,
+            (unsigned long)t->m_dbgRowAllocCount.load(),
+            (unsigned long)t->m_dbgRowFreeCount.load(),
+            (long)(t->m_dbgRowAllocCount.load() - t->m_dbgRowFreeCount.load()),
+            (unsigned long)t->m_dbgDraftAllocCount.load(),
+            (unsigned long)t->m_dbgDraftFreeCount.load(),
+            (long)(t->m_dbgDraftAllocCount.load() - t->m_dbgDraftFreeCount.load()));
+}
+
+inline void PrintGcStats(MOT::TxnManager* txn)
+{
+    MOT::GcManager* gc = txn->GetGcSession();
+    if (!gc) { fprintf(stderr, "GC: no session\n"); return; }
+    fprintf(stderr, "GC: limbo_inuse=%lu reclaimed=%lu_bytes retired=%lu_bytes "
+            "group_allocs=%u free_allocs=%u\n",
+            (unsigned long)gc->GetTotalLimboInuseElements(),
+            (unsigned long)gc->GetTotalLimboReclaimedSizeInBytes(),
+            (unsigned long)gc->GetTotalLimboRetiredSizeInBytes(),
+            (unsigned)gc->GetLimboGroupAllocations(),
+            (unsigned)gc->GetFreeAllocations());
+}
+#endif
 
 }  // namespace oro::tpcc
 #endif  // ORO_TPCC_HELPER_H

@@ -644,6 +644,9 @@ Row* Table::CreateNewRow()
     if (row == nullptr) {
         MOT_REPORT_ERROR(MOT_ERROR_OOM, "Create Row", "Failed to create new row in table %s", m_longTableName.c_str());
     }
+#ifdef ORO_MEMORY_DEBUG
+    else { m_dbgRowAllocCount.fetch_add(1, std::memory_order_relaxed); }
+#endif
     return row;
 }
 
@@ -675,6 +678,9 @@ Row* Table::CreateNewRowCopy(const Row* r, AccessType type)
         row->CopyHeader(*r);
         row->SetDeletedRow();
     }
+#ifdef ORO_MEMORY_DEBUG
+    m_dbgDraftAllocCount.fetch_add(1, std::memory_order_relaxed);
+#endif
     return row;
 }
 
@@ -690,6 +696,9 @@ void Table::DestroyRow(Row* row)
     } else {
         m_tombStonePool->Release<Row>(row);
     }
+#ifdef ORO_MEMORY_DEBUG
+    m_dbgRowFreeCount.fetch_add(1, std::memory_order_relaxed);
+#endif
 }
 
 bool Table::CreateMultipleRows(size_t numRows, Row* rows[])

@@ -40,6 +40,9 @@ public:
 #else
         m_size = ALIGN_N(sz + OBJ_INDEX_SIZE, align);
 #endif
+#ifdef ORO_MEMORY_DEBUG
+        m_size += 2 * ORO_CANARY_SIZE;
+#endif
         m_oixOffset = m_size - 1;
         m_type = ObjAllocInterface::CalcBufferClass(m_size);
     };
@@ -73,6 +76,9 @@ public:
         PoolAllocStateT state = PAS_NONE;
 
         OBJ_RELEASE_START(ptr, m_size);
+#ifdef ORO_MEMORY_DEBUG
+        OroCanaryCheck(ptr, m_size - 2 * ORO_CANARY_SIZE - OBJ_INDEX_SIZE, oix, op.Get());
+#endif
 #ifdef ENABLE_MEMORY_CHECK
         errno_t erc = memset_s(ptr, m_actualSize - MEMCHECK_METAINFO_SIZE, 'Z', m_actualSize - MEMCHECK_METAINFO_SIZE);
         securec_check(erc, "\0", "\0");
@@ -170,6 +176,9 @@ public:
 #else
         m_size = ALIGN_N(sz + OBJ_INDEX_SIZE, align);
 #endif
+#ifdef ORO_MEMORY_DEBUG
+        m_size += 2 * ORO_CANARY_SIZE;  // 8 before + 8 after usable area
+#endif
         m_oixOffset = m_size - 1;
         m_type = ObjAllocInterface::CalcBufferClass(m_size);
         errno_t erc =
@@ -247,6 +256,9 @@ public:
         ThreadAOP* t = &m_threadAOP[G_THREAD_ID];
 
         OBJ_RELEASE_START(ptr, m_size);
+#ifdef ORO_MEMORY_DEBUG
+        OroCanaryCheck(ptr, m_size - 2 * ORO_CANARY_SIZE - OBJ_INDEX_SIZE, oix, op.Get());
+#endif
 #ifdef ENABLE_MEMORY_CHECK
         errno_t erc = memset_s(ptr, m_actualSize - MEMCHECK_METAINFO_SIZE, 'Z', m_actualSize - MEMCHECK_METAINFO_SIZE);
         securec_check(erc, "\0", "\0");
