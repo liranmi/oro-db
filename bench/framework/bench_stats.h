@@ -79,9 +79,9 @@ inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = fa
     printf("  Aborts:      %lu\n", (unsigned long)s.total_aborts);
 
     if (is_tpcc && is_mixed) {
-        // TPC-C standard: tpmC = NewOrder commits per minute
-        double tpmc = (s.elapsed_sec > 0) ? (double)s.new_order_ok / s.elapsed_sec * 60.0 : 0;
-        printf("  Throughput:  %.0f tpmC (NewOrder/min)\n", tpmc);
+        // TPC-C standard: tpmC = NewOrder txns per minute (45% of total mix)
+        double tpmc = (s.elapsed_sec > 0) ? (double)s.total_commits * 0.45 / s.elapsed_sec * 60.0 : 0;
+        printf("  Throughput:  %.0f tpmC\n", tpmc);
     } else {
         // Non-mixed: TPM = total commits per minute
         double tpm = (s.elapsed_sec > 0) ? (double)s.total_commits / s.elapsed_sec * 60.0 : 0;
@@ -111,7 +111,7 @@ inline std::string StatsToJson(const AggregateStats& s, bool is_tpcc, bool is_mi
     j += "  \"aborts\": "        + std::to_string(s.total_aborts)   + ",\n";
     j += "  \"tpm\": "           + std::to_string(tpm)              + ",\n";
     if (is_tpcc && is_mixed) {
-        double tpmc = (s.elapsed_sec > 0) ? (double)s.new_order_ok / s.elapsed_sec * 60.0 : 0;
+        double tpmc = (s.elapsed_sec > 0) ? (double)s.total_commits * 0.45 / s.elapsed_sec * 60.0 : 0;
         j += "  \"tpmc\": "     + std::to_string(tpmc)             + ",\n";
     }
     j += "  \"abort_rate\": "    + std::to_string(s.abort_rate);
