@@ -310,7 +310,7 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
 static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
 {
     printf("    Populating ITEM (%u rows)...\n", ITEM_COUNT);
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t i = 1; i <= ITEM_COUNT; i++) {
         Row* row = t.item->CreateNewRow();
         if (!row) continue;
@@ -339,7 +339,7 @@ static void PopulateItems(TxnManager* txn, TpccTables& t, FastRandom& rng)
 
 static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     Row* row = t.warehouse->CreateNewRow();
     row->SetValue<uint64_t>(WH::W_ID, w_id);
     char buf[21];
@@ -357,7 +357,7 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
     txn->EndTransaction();
 
     /* // Uncomment to verify warehouse readback:
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     Key* vkey = BuildSearchKey(t.ix_warehouse, t.warehouse, PackWhKey(w_id));
     RC vrc = RC_OK;
     Row* found = txn->RowLookupByKey(t.warehouse, AccessType::RD, vkey, vrc);
@@ -374,7 +374,7 @@ static void PopulateWarehouse(TxnManager* txn, TpccTables& t, uint64_t w_id, Fas
 
 static void PopulateDistricts(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
         Row* row = t.district->CreateNewRow();
         row->SetValue<uint64_t>(DIST::D_ID, d);
@@ -402,7 +402,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
     int64_t now = (int64_t)time(nullptr);
 
     // Customer rows
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
         Row* row = t.customer->CreateNewRow();
         row->SetValue<uint64_t>(CUST::C_ID, c);
@@ -440,7 +440,7 @@ static void PopulateCustomers(TxnManager* txn, TpccTables& t,
     txn->EndTransaction();
 
     // History rows (separate transaction)
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
         Row* hrow = t.history->CreateNewRow();
         hrow->SetValue<uint64_t>(HIST::H_C_ID, c);
@@ -471,7 +471,7 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
     int64_t now = (int64_t)time(nullptr);
 
     // Orders + NewOrders + OrderLines in one transaction
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t o = 1; o <= ORD_PER_DIST; o++) {
         uint64_t c_id = perm[o - 1];
         uint64_t ol_cnt = rng.NextUniform(MIN_OL_CNT, MAX_OL_CNT);
@@ -524,7 +524,7 @@ static void PopulateOrders(TxnManager* txn, TpccTables& t,
 
 static void PopulateStock(TxnManager* txn, TpccTables& t, uint64_t w_id, FastRandom& rng)
 {
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
     for (uint64_t i = 1; i <= STOCK_PER_WARE; i++) {
         Row* row = t.stock->CreateNewRow();
         if (!row) continue;

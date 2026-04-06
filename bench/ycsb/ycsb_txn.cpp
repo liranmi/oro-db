@@ -262,7 +262,7 @@ RC RunYcsbTxn(TxnManager* txn, const YcsbTables& tables,
     RC rc = RC_OK;
 
     // Begin a new transaction.
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     for (uint32_t i = 0; i < ops_per_txn; i++) {
         OpType op = PickOperation(profile, rng);

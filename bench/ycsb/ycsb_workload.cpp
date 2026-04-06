@@ -129,7 +129,7 @@ bool PopulateData(MOTEngine* engine, YcsbTables& tables,
 
     uint64_t inserted = 0;
     for (uint64_t i = 0; i < record_count; i++) {
-        txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+        txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
         Row* row = tables.usertable->CreateNewRow();
         if (!row) {

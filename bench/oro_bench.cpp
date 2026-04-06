@@ -79,7 +79,7 @@ int main(int argc, char* argv[])
 
     // 3. Create table
     printf("[3] Creating table 'bench_kv'...\n");
-    txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), MOT::ISOLATION_LEVEL::READ_COMMITED);
 
     MOT::Table* table = new MOT::Table();
     if (!table->Init("bench_kv", "public.bench_kv", 3)) {
@@ -114,7 +114,7 @@ int main(int argc, char* argv[])
     uint64_t inserted = 0;
 
     for (uint64_t i = 1; i <= numRows; ++i) {
-        txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+        txn->StartTransaction(txn->GetTransactionId(), MOT::ISOLATION_LEVEL::READ_COMMITED);
         MOT::Row* row = table->CreateNewRow();
         if (!row) break;
 
