@@ -44,7 +44,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
 {
     RC rc = RC_OK;
     (void)rng;
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     // SQL: SELECT W_TAX FROM WAREHOUSE WHERE W_ID = :w_id
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD, PackWhKey(p.w_id), rc);
@@ -158,7 +158,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
 RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 {
     RC rc = RC_OK;
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     // SQL: UPDATE warehouse SET w_ytd = w_ytd + :h_amount
     //      WHERE w_id = :w_id
@@ -330,7 +330,7 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
 RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams& p)
 {
     RC rc = RC_OK;
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     if (p.by_last_name) { txn->Rollback(); return RC_ABORT; }
 
@@ -352,7 +352,7 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
 RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
 {
     RC rc = RC_OK;
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     for (uint64_t d_id = 1; d_id <= DIST_PER_WARE; d_id++) {
         // Find oldest new-order via point lookup (scan TODO)
@@ -374,7 +374,7 @@ RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
 RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p)
 {
     RC rc = RC_OK;
-    txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+    txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }

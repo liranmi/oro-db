@@ -280,7 +280,7 @@ int main(int argc, char* argv[])
     oro::ycsb::YcsbTables ycsb_tables;
 
     if (cfg.workload == oro::WorkloadType::TPCC) {
-        ddl_txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+        ddl_txn->StartTransaction(ddl_txn->GetTransactionId(), MOT::ISOLATION_LEVEL::READ_COMMITED);
         if (!oro::tpcc::CreateSchema(ddl_txn, tpcc_tables, cfg.tpcc_small_schema)) {
             fprintf(stderr, "FATAL: TPC-C schema creation failed\n");
             engine->GetSessionManager()->DestroySessionContext(ddl_session);
@@ -308,7 +308,7 @@ int main(int argc, char* argv[])
         }
         printf("    Data population complete.\n\n");
     } else {
-        ddl_txn->StartTransaction(0, MOT::ISOLATION_LEVEL::READ_COMMITED);
+        ddl_txn->StartTransaction(ddl_txn->GetTransactionId(), MOT::ISOLATION_LEVEL::READ_COMMITED);
         if (!oro::ycsb::CreateSchema(ddl_txn, ycsb_tables, cfg.ycsb_field_count, cfg.ycsb_field_length)) {
             fprintf(stderr, "FATAL: YCSB schema creation failed\n");
             engine->GetSessionManager()->DestroySessionContext(ddl_session);
