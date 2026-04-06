@@ -71,6 +71,16 @@ inline AggregateStats Aggregate(const std::vector<ThreadStats>& per_thread, doub
     return agg;
 }
 
+inline void FormatLargeNumber(char* buf, size_t bufsize, double val, const char* suffix)
+{
+    if (val >= 1e6)
+        snprintf(buf, bufsize, "%.2fM %s", val / 1e6, suffix);
+    else if (val >= 1e3)
+        snprintf(buf, bufsize, "%.2fK %s", val / 1e3, suffix);
+    else
+        snprintf(buf, bufsize, "%.0f %s", val, suffix);
+}
+
 inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = false)
 {
     printf("\n=== Benchmark Results ===\n");
@@ -78,15 +88,18 @@ inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = fa
     printf("  Commits:     %lu\n", (unsigned long)s.total_commits);
     printf("  Aborts:      %lu\n", (unsigned long)s.total_aborts);
 
+    char throughput_buf[64];
+    double elapsed_min = s.elapsed_sec / 60.0;
     if (is_tpcc && is_mixed) {
         // TPC-C standard: tpmC = NewOrder txns per minute (45% of total mix)
-        double tpmc = (s.elapsed_sec > 0) ? (double)s.total_commits * 0.45 / s.elapsed_sec * 60.0 : 0;
-        printf("  Throughput:  %.0f tpmC\n", tpmc);
+        double tpmc = (elapsed_min > 0) ? (double)s.total_commits * 0.45 / elapsed_min : 0;
+        FormatLargeNumber(throughput_buf, sizeof(throughput_buf), tpmc, "tpmC");
     } else {
         // Non-mixed: TPM = total commits per minute
-        double tpm = (s.elapsed_sec > 0) ? (double)s.total_commits / s.elapsed_sec * 60.0 : 0;
-        printf("  Throughput:  %.0f TPM\n", tpm);
+        double tpm = (elapsed_min > 0) ? (double)s.total_commits / elapsed_min : 0;
+        FormatLargeNumber(throughput_buf, sizeof(throughput_buf), tpm, "TPM");
     }
+    printf("  Throughput:  %s\n", throughput_buf);
 
     printf("  Abort rate:  %.2f%%\n", s.abort_rate * 100.0);
 
@@ -104,14 +117,15 @@ inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = fa
 
 inline std::string StatsToJson(const AggregateStats& s, bool is_tpcc, bool is_mixed = false)
 {
-    double tpm = (s.elapsed_sec > 0) ? (double)s.total_commits / s.elapsed_sec * 60.0 : 0;
+    double elapsed_min = s.elapsed_sec / 60.0;
+    double tpm = (elapsed_min > 0) ? (double)s.total_commits / elapsed_min : 0;
     std::string j = "{\n";
     j += "  \"elapsed_sec\": "   + std::to_string(s.elapsed_sec)    + ",\n";
     j += "  \"commits\": "       + std::to_string(s.total_commits)  + ",\n";
     j += "  \"aborts\": "        + std::to_string(s.total_aborts)   + ",\n";
     j += "  \"tpm\": "           + std::to_string(tpm)              + ",\n";
     if (is_tpcc && is_mixed) {
-        double tpmc = (s.elapsed_sec > 0) ? (double)s.total_commits * 0.45 / s.elapsed_sec * 60.0 : 0;
+        double tpmc = (elapsed_min > 0) ? (double)s.total_commits * 0.45 / elapsed_min : 0;
         j += "  \"tpmc\": "     + std::to_string(tpmc)             + ",\n";
     }
     j += "  \"abort_rate\": "    + std::to_string(s.abort_rate);
