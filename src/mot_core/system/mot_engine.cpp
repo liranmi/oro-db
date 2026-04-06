@@ -25,6 +25,7 @@
 #include "mot_engine.h"
 #include "spin_lock.h"
 #include "config_manager.h"
+#include <unistd.h>
 #include "statistics_manager.h"
 #include "network_statistics.h"
 #include "db_session_statistics.h"
@@ -185,6 +186,16 @@ bool MOTEngine::LoadConfig()
         // In standalone mode, disable checkpoint and redo log (no WAL infrastructure)
         GetGlobalConfiguration().m_enableCheckpoint = false;
         GetGlobalConfiguration().m_enableRedoLog = false;
+        // Detect actual system RAM (in openGauss, Postgres sets this via SetTotalMemoryMb)
+        {
+            long pages = sysconf(_SC_PHYS_PAGES);
+            long page_size = sysconf(_SC_PAGE_SIZE);
+            if (pages > 0 && page_size > 0) {
+                uint64_t totalMb = (uint64_t)pages * (uint64_t)page_size / (1024ULL * 1024ULL);
+                GetGlobalConfiguration().SetTotalMemoryMb(totalMb);
+                MOT_LOG_INFO("Standalone mode: detected %lu MB system RAM", (unsigned long)totalMb);
+            }
+        }
 #endif
         if (!GetGlobalConfiguration().m_enableNuma) {
             MOT_LOG_WARN("NUMA-aware memory allocation is disabled");
