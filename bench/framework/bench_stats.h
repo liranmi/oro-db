@@ -71,13 +71,23 @@ inline AggregateStats Aggregate(const std::vector<ThreadStats>& per_thread, doub
     return agg;
 }
 
-inline void PrintStats(const AggregateStats& s, bool is_tpcc)
+inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = false)
 {
     printf("\n=== Benchmark Results ===\n");
     printf("  Duration:    %.2f sec\n", s.elapsed_sec);
     printf("  Commits:     %lu\n", (unsigned long)s.total_commits);
     printf("  Aborts:      %lu\n", (unsigned long)s.total_aborts);
-    printf("  Throughput:  %.0f txn/sec\n", s.throughput_tps);
+
+    if (is_tpcc && is_mixed) {
+        // TPC-C standard: tpmC = NewOrder commits per minute
+        double tpmc = (s.elapsed_sec > 0) ? (double)s.new_order_ok / s.elapsed_sec * 60.0 : 0;
+        printf("  Throughput:  %.0f tpmC (NewOrder/min)\n", tpmc);
+    } else {
+        // Non-mixed: TPM = total commits per minute
+        double tpm = (s.elapsed_sec > 0) ? (double)s.total_commits / s.elapsed_sec * 60.0 : 0;
+        printf("  Throughput:  %.0f TPM\n", tpm);
+    }
+
     printf("  Abort rate:  %.2f%%\n", s.abort_rate * 100.0);
 
     if (is_tpcc) {
@@ -92,13 +102,18 @@ inline void PrintStats(const AggregateStats& s, bool is_tpcc)
     printf("=========================\n");
 }
 
-inline std::string StatsToJson(const AggregateStats& s, bool is_tpcc)
+inline std::string StatsToJson(const AggregateStats& s, bool is_tpcc, bool is_mixed = false)
 {
+    double tpm = (s.elapsed_sec > 0) ? (double)s.total_commits / s.elapsed_sec * 60.0 : 0;
     std::string j = "{\n";
     j += "  \"elapsed_sec\": "   + std::to_string(s.elapsed_sec)    + ",\n";
     j += "  \"commits\": "       + std::to_string(s.total_commits)  + ",\n";
     j += "  \"aborts\": "        + std::to_string(s.total_aborts)   + ",\n";
-    j += "  \"throughput_tps\": " + std::to_string(s.throughput_tps) + ",\n";
+    j += "  \"tpm\": "           + std::to_string(tpm)              + ",\n";
+    if (is_tpcc && is_mixed) {
+        double tpmc = (s.elapsed_sec > 0) ? (double)s.new_order_ok / s.elapsed_sec * 60.0 : 0;
+        j += "  \"tpmc\": "     + std::to_string(tpmc)             + ",\n";
+    }
     j += "  \"abort_rate\": "    + std::to_string(s.abort_rate);
     if (is_tpcc) {
         j += ",\n  \"tpcc\": {\n";

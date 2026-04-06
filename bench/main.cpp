@@ -487,12 +487,13 @@ int main(int argc, char* argv[])
 
     // --- Aggregate and print results ---
     bool is_tpcc = (cfg.workload == oro::WorkloadType::TPCC);
+    bool is_mixed = is_tpcc && (cfg.tpcc_mode == oro::TpccMode::MIXED);
     oro::AggregateStats agg = oro::Aggregate(all_stats, elapsed_sec);
-    oro::PrintStats(agg, is_tpcc);
+    oro::PrintStats(agg, is_tpcc, is_mixed);
 
     // Optional JSON output
     if (cfg.json_output) {
-        std::string json = oro::StatsToJson(agg, is_tpcc);
+        std::string json = oro::StatsToJson(agg, is_tpcc, is_mixed);
         FILE* fp = fopen(cfg.json_file.c_str(), "w");
         if (fp) {
             fwrite(json.data(), 1, json.size(), fp);
