@@ -219,6 +219,99 @@ inline MOT::RC ScanPrefix(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* i
 }
 
 // ======================================================================
+// Secondary index helpers for customer by-last-name lookup
+//
+// Key layout for ix_customer_last (non-unique):
+//   [C_W_ID:8 BE][C_D_ID:8 BE][C_LAST:17 raw][C_FIRST:17 raw][rowId:8]
+//   User portion = 50 bytes, suffix = 8 bytes, total = 58 bytes.
+// ======================================================================
+
+static constexpr uint16_t CUST_LAST_USER_KEY_LEN = 8 + 8 + 17 + 17;  // 50
+static constexpr uint16_t CUST_LAST_PREFIX_LEN   = 8 + 8 + 17;       // 33
+
+// Build a search key for ix_customer_last.
+// c_first may be nullptr (for prefix-only searches).
+// Caller must destroy via ix->DestroyKey().
+inline MOT::Key* BuildCustLastSearchKey(MOT::Index* ix,
+                                        uint64_t w_id, uint64_t d_id,
+                                        const char* c_last, const char* c_first = nullptr)
+{
+    MOT::Key* key = ix->CreateNewSearchKey();
+    if (!key) return nullptr;
+
+    // Zero entire buffer (including suffix) so prefix scans start at first match
+    key->FillPattern(0x00, key->GetKeyLength(), 0);
+
+    uint8_t buf8[8];
+    EncodeU64BE(buf8, w_id);
+    key->FillValue(buf8, 8, 0);
+    EncodeU64BE(buf8, d_id);
+    key->FillValue(buf8, 8, 8);
+    if (c_last) {
+        uint16_t len = (uint16_t)strnlen(c_last, 17);
+        key->FillValue(reinterpret_cast<const uint8_t*>(c_last), len, 16);
+    }
+    if (c_first) {
+        uint16_t len = (uint16_t)strnlen(c_first, 17);
+        key->FillValue(reinterpret_cast<const uint8_t*>(c_first), len, 33);
+    }
+    return key;
+}
+
+// Populate the manually-managed secondary index ix_customer_last by iterating
+// the primary index.  Must be called after all customers are loaded.
+inline void PopulateCustLastIndex(MOT::Index* ix_sec, MOT::Index* ix_pri,
+                                  MOT::Table* table, uint32_t pid = 0)
+{
+    uint64_t count = 0;
+    MOT::IndexIterator* it = ix_pri->Begin(pid);
+    while (it != nullptr && it->IsValid()) {
+        MOT::Sentinel* ps = it->GetPrimarySentinel();
+        MOT::Row* row = ps ? ps->GetData() : nullptr;
+        if (!row) { it->Next(); continue; }
+
+        // Extract fields
+        uint64_t w_id, d_id;
+        row->GetValue(CUST::C_W_ID, w_id);
+        row->GetValue(CUST::C_D_ID, d_id);
+        const char* c_last  = reinterpret_cast<const char*>(row->GetValue(CUST::C_LAST));
+        const char* c_first = reinterpret_cast<const char*>(row->GetValue(CUST::C_FIRST));
+
+        // Build secondary key (50 user bytes + 8 rowId suffix = 58 total)
+        MOT::Key* skey = ix_sec->CreateNewSearchKey();
+        if (!skey) { fprintf(stderr, "ERROR: failed to alloc secondary key\n"); break; }
+        skey->FillPattern(0x00, skey->GetKeyLength(), 0);
+
+        uint8_t buf8[8];
+        EncodeU64BE(buf8, w_id);
+        skey->FillValue(buf8, 8, 0);
+        EncodeU64BE(buf8, d_id);
+        skey->FillValue(buf8, 8, 8);
+        uint16_t lastLen = (uint16_t)strnlen(c_last, 17);
+        skey->FillValue(reinterpret_cast<const uint8_t*>(c_last), lastLen, 16);
+        uint16_t firstLen = (uint16_t)strnlen(c_first, 17);
+        skey->FillValue(reinterpret_cast<const uint8_t*>(c_first), firstLen, 33);
+
+        // Non-unique suffix: rowId in native endian at offset 50
+        uint64_t rowId = row->GetRowId();
+        skey->FillValue(reinterpret_cast<const uint8_t*>(&rowId),
+                        NON_UNIQUE_INDEX_SUFFIX_LEN,
+                        CUST_LAST_USER_KEY_LEN);
+
+        MOT::Sentinel* res = ix_sec->IndexInsert(skey, row, pid);
+        if (!res) {
+            fprintf(stderr, "WARN: secondary index insert failed for customer row %lu\n",
+                    (unsigned long)rowId);
+        }
+        ix_sec->DestroyKey(skey);
+        count++;
+        it->Next();
+    }
+    if (it) it->Destroy();
+    fprintf(stderr, "  ix_customer_last: populated %lu entries\n", (unsigned long)count);
+}
+
+// ======================================================================
 // Per-table row debug printers
 //
 // Each function prints all data columns of a row to stderr.

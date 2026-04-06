@@ -151,7 +151,20 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable customer: %s\n", RcToString(rc)); return false; }
     t.ix_customer = MakePrimaryIndex(txn, t.customer, "ix_customer");
     if (!t.ix_customer) return false;
-    // TODO: secondary index ix_customer_last for by-last-name lookup
+    // Secondary index: (C_W_ID, C_D_ID, C_LAST, C_FIRST) — non-unique, manually managed.
+    // Not registered on the table (BuildKey's InternalKey path can't build multi-field keys).
+    {
+        RC irc = RC_OK;
+        t.ix_customer_last = IndexFactory::CreateIndexEx(
+            IndexOrder::INDEX_ORDER_SECONDARY, IndexingMethod::INDEXING_METHOD_TREE,
+            DEFAULT_TREE_FLAVOR, false /*non-unique*/, CUST_LAST_USER_KEY_LEN,
+            "ix_customer_last", irc, nullptr);
+        if (!t.ix_customer_last || irc != RC_OK) {
+            fprintf(stderr, "ERROR: Failed to create ix_customer_last: %s\n", RcToString(irc));
+            return false;
+        }
+        t.ix_customer_last->SetTable(t.customer);
+    }
 
     // ---- HISTORY (Clause 1.3.4) ----
     // No natural PK per spec — use fake primary with surrogate m_rowId
@@ -594,6 +607,14 @@ bool PopulateData(MOTEngine* engine, TpccTables& tables, uint32_t num_warehouses
         threads.emplace_back(PopulateWarehouseThread, PopulateArgs{engine, &tables, w});
     }
     for (auto& th : threads) th.join();
+
+    // Populate the manually-managed customer secondary index (by-last-name).
+    // Must run after all warehouse threads finish so all customer rows exist.
+    if (tables.ix_customer_last && tables.ix_customer) {
+        printf("  Building ix_customer_last secondary index...\n");
+        PopulateCustLastIndex(tables.ix_customer_last, tables.ix_customer,
+                              tables.customer);
+    }
 
     printf("[Population] Done.\n\n");
     return true;

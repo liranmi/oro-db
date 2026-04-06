@@ -160,33 +160,101 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     RC rc = RC_OK;
     txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
 
-    // by-last-name requires secondary index (not yet implemented)
-    if (p.by_last_name) {
-        txn->Rollback();
-        return RC_ABORT;
-    }
-
-    // SQL: UPDATE WAREHOUSE SET W_YTD += :h_amount
+    // SQL: UPDATE warehouse SET w_ytd = w_ytd + :h_amount
+    //      WHERE w_id = :w_id
     Row* w_row = Lookup(txn, t.warehouse, t.ix_warehouse, AccessType::RD_FOR_UPDATE, PackWhKey(p.w_id), rc);
     if (!w_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double w_ytd; w_row->GetValue(WH::W_YTD, w_ytd);
     rc = txn->UpdateRow(w_row, WH::W_YTD, w_ytd + p.h_amount);
     if (rc != RC_OK) { txn->Rollback(); return rc; }
 
-    // SQL: UPDATE DISTRICT SET D_YTD += :h_amount
+    // SQL: UPDATE district SET d_ytd = d_ytd + :h_amount
+    //      WHERE d_w_id = :w_id AND d_id = :d_id
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD_FOR_UPDATE, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     double d_ytd; d_row->GetValue(DIST::D_YTD, d_ytd);
     rc = txn->UpdateRow(d_row, DIST::D_YTD, d_ytd + p.h_amount);
     if (rc != RC_OK) { txn->Rollback(); return rc; }
 
-    // Customer lookup
+    // Customer lookup — by-last-name (60%) or by-ID (40%)
     Row* c_row = nullptr;
-    c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
-                   PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
-    if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+    uint64_t c_id = p.c_id;
 
-    // SQL: UPDATE CUSTOMER
+    if (p.by_last_name) {
+        // SQL: SELECT count(c_id) INTO :namecnt
+        //        FROM customer
+        //       WHERE c_last = :c_last AND c_d_id = :c_d_id AND c_w_id = :c_w_id;
+        //
+        // SQL: DECLARE c_byname CURSOR FOR
+        //      SELECT c_first, c_middle, c_id, c_street_1, c_street_2, c_city,
+        //             c_state, c_zip, c_phone, c_credit, c_credit_lim,
+        //             c_discount, c_balance, c_since
+        //        FROM customer
+        //       WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_last = :c_last
+        //       ORDER BY c_first;
+        //      OPEN c_byname;
+        //      FETCH c_byname to midpoint (namecnt/2 rounded up);
+        //      CLOSE c_byname;
+        //
+        Index* ix = t.ix_customer_last;
+        if (!ix) { txn->Rollback(); return RC_ABORT; }
+
+        Key* prefix = BuildCustLastSearchKey(ix, p.c_w_id, p.c_d_id, p.c_last);
+        if (!prefix) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
+
+        // Count visible rows matching (c_w_id, c_d_id, c_last), collect their c_ids
+        uint32_t namecnt = 0;
+        bool found = false;
+        IndexIterator* it = ix->Search(prefix, true, true, 0, found);
+        std::vector<uint64_t> c_id_vector;
+        while (it != nullptr && it->IsValid()) {
+            const Key* cur = reinterpret_cast<const Key*>(it->GetKey());
+            if (!cur || memcmp(cur->GetKeyBuf(), prefix->GetKeyBuf(), CUST_LAST_PREFIX_LEN) != 0)
+                break;
+            Sentinel* s = it->GetPrimarySentinel();
+            Row* r = txn->RowLookup(AccessType::RD, s, rc);
+            if (rc != RC_OK) break;
+            if (r) {
+                uint64_t it_c_id;
+                r->GetValue(CUST::C_ID, it_c_id);
+                c_id_vector.push_back(it_c_id);
+                namecnt++;
+            }
+            it->Next();
+        }
+        if (it) it->Destroy();
+        ix->DestroyKey(prefix);
+
+        if (rc != RC_OK || namecnt == 0) {
+            txn->Rollback();
+            return rc != RC_OK ? rc : RC_ABORT;
+        }
+
+        // Midpoint: spec says "if namecnt is odd, namecnt++; fetch namecnt/2 rows"
+        // i.e. position = ceil(namecnt/2), 1-indexed → 0-indexed = ceil(namecnt/2) - 1
+        uint32_t mid = (namecnt + 1) / 2 - 1;
+        c_id = c_id_vector[mid];
+
+        // Re-lookup the midpoint customer by primary key with RD_FOR_UPDATE
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
+                       PackCustKey(p.c_w_id, p.c_d_id, c_id), rc);
+        if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+
+    } else {
+        // SQL: SELECT c_first, c_middle, c_last, c_street_1, c_street_2, c_city,
+        //             c_state, c_zip, c_phone, c_credit, c_credit_lim,
+        //             c_discount, c_balance, c_since
+        //        FROM customer
+        //       WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD_FOR_UPDATE,
+                       PackCustKey(p.c_w_id, p.c_d_id, p.c_id), rc);
+        if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+    }
+
+    // SQL: UPDATE customer SET c_balance = :c_balance,
+    //             c_ytd_payment = c_ytd_payment + :h_amount,
+    //             c_payment_cnt = c_payment_cnt + 1
+    //      WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id
     double c_balance; c_row->GetValue(CUST::C_BALANCE, c_balance);
     rc = txn->UpdateRow(c_row, CUST::C_BALANCE, c_balance - p.h_amount);
     if (rc != RC_OK) { txn->Rollback(); return rc; }
@@ -196,11 +264,46 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
     uint64_t c_payment_cnt; c_row->GetValue(CUST::C_PAYMENT_CNT, c_payment_cnt);
     c_draft->SetValue<uint64_t>(CUST::C_PAYMENT_CNT, c_payment_cnt + 1);
 
-    // SQL: INSERT INTO HISTORY
+    // SQL (BC path):
+    //   SELECT c_data INTO :c_data FROM customer
+    //    WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id;
+    //   UPDATE customer SET c_balance = :c_balance, c_data = :c_new_data
+    //    WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id;
+    // SQL (GC path):
+    //   UPDATE customer SET c_balance = :c_balance
+    //    WHERE c_w_id = :c_w_id AND c_d_id = :c_d_id AND c_id = :c_id;
+    const char* c_credit = reinterpret_cast<const char*>(c_row->GetValue(CUST::C_CREDIT));
+    if (c_credit[0] == 'B' && c_credit[1] == 'C') {
+        const char* old_data = reinterpret_cast<const char*>(c_row->GetValue(CUST::C_DATA));
+        char new_data[501];
+        memset(new_data, 0, sizeof(new_data));
+        int prefix_len = snprintf(new_data, sizeof(new_data),
+            "%lu %lu %lu %lu %lu %.2f ",
+            (unsigned long)c_id,
+            (unsigned long)p.c_d_id,
+            (unsigned long)p.c_w_id,
+            (unsigned long)p.d_id,
+            (unsigned long)p.w_id,
+            p.h_amount);
+        if (prefix_len < 0) prefix_len = 0;
+        if (prefix_len > 500) prefix_len = 500;
+        uint32_t old_len = (uint32_t)strnlen(old_data, 500);
+        uint32_t copy_len = ((uint32_t)(500 - prefix_len) < old_len)
+                            ? (uint32_t)(500 - prefix_len) : old_len;
+        if (copy_len > 0)
+            memcpy(new_data + prefix_len, old_data, copy_len);
+        new_data[prefix_len + copy_len] = '\0';
+        SetStringValue(c_draft, CUST::C_DATA, new_data);
+    }
+
+    // SQL: INSERT INTO history (h_c_d_id, h_c_w_id, h_c_id, h_d_id,
+    //                         h_w_id, h_date, h_amount, h_data)
+    //      VALUES (:c_d_id, :c_w_id, :c_id, :d_id,
+    //              :w_id, :datetime, :h_amount, :h_data)
     {
         Row* hrow = t.history->CreateNewRow();
         if (!hrow) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
-        hrow->SetValue<uint64_t>(HIST::H_C_ID, p.c_id);
+        hrow->SetValue<uint64_t>(HIST::H_C_ID, c_id);
         hrow->SetValue<uint64_t>(HIST::H_C_D_ID, p.c_d_id);
         hrow->SetValue<uint64_t>(HIST::H_C_W_ID, p.c_w_id);
         hrow->SetValue<uint64_t>(HIST::H_D_ID, p.d_id);
@@ -212,7 +315,6 @@ RC RunPayment(TxnManager* txn, const TpccTables& t, const PaymentParams& p)
         char d_name[11] = {0}; memcpy(d_name, d_row->GetValue(DIST::D_NAME), 10);
         snprintf(h_data, sizeof(h_data), "%.10s    %.10s", w_name, d_name);
         SetStringValue(hrow, HIST::H_DATA, h_data);
-        // Fake primary: surrogate key auto-generated by Table::InsertRow
         rc = t.history->InsertRow(hrow, txn);
         if (rc != RC_OK) { t.history->DestroyRow(hrow); txn->Rollback(); return rc; }
     }
