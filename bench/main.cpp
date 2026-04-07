@@ -34,6 +34,7 @@
 #include "tpcc_query.h"
 #include "tpcc_config.h"
 #include "tpcc_helper.h"
+#include "tpcc_consistency.h"
 #include "ycsb_workload.h"
 #include "ycsb_txn.h"
 #include "ycsb_config.h"
@@ -60,6 +61,7 @@ static void PrintUsage(const char* prog)
     printf("  --small              Use reduced TPC-C schema\n");
     printf("  -M                   Full TPC-C mix (default): 45%% NewOrder, 43%% Payment, etc.\n");
     printf("  -Tp N                NewOrder/Payment only: N%% NewOrder, (100-N)%% Payment\n");
+    printf("  --consistency-pct N  Mix N%% consistency checks into txn workload (0-100)\n");
     printf("\nYCSB options:\n");
     printf("  --profile A|B|C|D|E|F   Workload profile (default: A)\n");
     printf("  --records N             Number of records (default: 1000000)\n");
@@ -111,6 +113,13 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
         // TPC-C flags
         } else if (MatchArg(argv[i], "--warehouses") && i + 1 < argc) {
             cfg.tpcc_warehouses = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--consistency-pct") && i + 1 < argc) {
+            int pct = atoi(argv[++i]);
+            if (pct < 0 || pct > 100) {
+                fprintf(stderr, "Error: --consistency-pct must be 0–100\n");
+                return false;
+            }
+            cfg.tpcc_consistency_pct = pct / 100.0;
         } else if (MatchArg(argv[i], "--small")) {
             cfg.tpcc_small_schema = true;
         } else if (MatchArg(argv[i], "-M")) {
@@ -226,6 +235,8 @@ int main(int argc, char* argv[])
                    cfg.tpcc_new_order_pct * 100, cfg.tpcc_payment_pct * 100);
         else
             printf("  Mode:       -M (full TPC-C mix)\n");
+        if (cfg.tpcc_consistency_pct > 0)
+            printf("  Consistency: %.0f%% of txn mix\n", cfg.tpcc_consistency_pct * 100);
         if (cfg.tpcc_small_schema)
             printf("  Schema:     small (reduced columns)\n");
     } else {
@@ -414,6 +425,14 @@ int main(int argc, char* argv[])
                             else stats.tpcc_stock_level_fail++;
                             break;
                         }
+                        case oro::tpcc::TxnType::CONSISTENCY: {
+                            oro::tpcc::ConsistencyResult result;
+                            uint32_t check_id = (uint32_t)rng.NextUniform(1, oro::tpcc::NUM_CONSISTENCY_CHECKS);
+                            rc = oro::tpcc::RunConsistencyCheck(txn, tpcc_tables, num_wh, check_id, result);
+                            if (rc == MOT::RC_OK) stats.tpcc_consistency_ok++;
+                            else stats.tpcc_consistency_fail++;
+                            break;
+                        }
                     }
                     if (rc == MOT::RC_OK) stats.commits++;
                     else stats.aborts++;
@@ -516,7 +535,10 @@ int main(int argc, char* argv[])
         } else {
             MOT::TxnManager* check_txn = check_session->GetTxnManager();
 
-            if (cfg.workload == oro::WorkloadType::YCSB) {
+            if (cfg.workload == oro::WorkloadType::TPCC) {
+                check_failures += oro::tpcc::RunAllConsistencyChecks(
+                    check_txn, tpcc_tables, cfg.tpcc_warehouses);
+            } else if (cfg.workload == oro::WorkloadType::YCSB) {
                 // Verify throughput > 0 (transactions actually executed)
                 if (agg.total_commits > 0) {
                     printf("    [PASS] YCSB commits: %lu\n", (unsigned long)agg.total_commits);

@@ -163,6 +163,7 @@ if(ORO_BUILD_BENCH)
         ${CMAKE_SOURCE_DIR}/bench/main.cpp
         ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_workload.cpp
         ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_txn.cpp
+        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_consistency.cpp
         ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_workload.cpp
         ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_txn.cpp
     )

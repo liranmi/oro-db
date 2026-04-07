@@ -143,6 +143,38 @@ inline uint64_t CountRows(MOT::Index* ix, uint32_t pid = 0)
     return count;
 }
 
+// Scan by key column value — full index scan with numeric filtering on the
+// packed _KEY column.  Iterates the entire index, reading each visible row's
+// key_col value and calling the callback only for rows whose key is within
+// [start_key, end_key] inclusive.  Rows outside the range are skipped.
+//
+// This works correctly regardless of MassTree's internal byte ordering because
+// the comparison is on the uint64 column value, not on raw key bytes.
+inline MOT::RC ScanByKeyColumn(MOT::TxnManager* txn, MOT::Index* ix,
+                               int key_col, uint64_t start_key, uint64_t end_key,
+                               const std::function<bool(MOT::Row*)>& cb, uint32_t pid = 0)
+{
+    MOT::RC rc = MOT::RC_OK;
+    MOT::IndexIterator* it = ix->Begin(pid);
+
+    while (it != nullptr && it->IsValid()) {
+        MOT::Sentinel* sentinel = it->GetPrimarySentinel();
+        MOT::Row* row = txn->RowLookup(MOT::AccessType::RD, sentinel, rc);
+        if (rc != MOT::RC_OK) break;
+        if (row) {
+            uint64_t key_val;
+            row->GetValue(key_col, key_val);
+            if (key_val >= start_key && key_val <= end_key) {
+                if (!cb(row)) break;
+            }
+        }
+        it->Next();
+    }
+
+    if (it) it->Destroy();
+    return rc;
+}
+
 // Range scan [start_key, end_key] inclusive — cursor walks from start to end.
 // Callback returns true to continue, false to stop early.
 inline MOT::RC ScanRange(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* ix,
