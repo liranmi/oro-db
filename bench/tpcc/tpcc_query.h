@@ -15,19 +15,26 @@
 namespace oro::tpcc {
 
 // Transaction type selection
-enum class TxnType { NEW_ORDER, PAYMENT, ORDER_STATUS, DELIVERY, STOCK_LEVEL };
+enum class TxnType { NEW_ORDER, PAYMENT, ORDER_STATUS, DELIVERY, STOCK_LEVEL, CONSISTENCY };
 
 inline TxnType PickTxnType(const BenchConfig& cfg, FastRandom& rng)
 {
     double r = rng.NextDouble();
+
+    // Consistency checks are taken off the top of the mix
+    if (cfg.tpcc_consistency_pct > 0.0 && r < cfg.tpcc_consistency_pct)
+        return TxnType::CONSISTENCY;
+
+    // Scale remaining random into [0, 1) for the normal TPC-C mix
+    double remaining = (r - cfg.tpcc_consistency_pct) / (1.0 - cfg.tpcc_consistency_pct);
     double cum = cfg.tpcc_new_order_pct;
-    if (r < cum) return TxnType::NEW_ORDER;
+    if (remaining < cum) return TxnType::NEW_ORDER;
     cum += cfg.tpcc_payment_pct;
-    if (r < cum) return TxnType::PAYMENT;
+    if (remaining < cum) return TxnType::PAYMENT;
     cum += cfg.tpcc_order_status_pct;
-    if (r < cum) return TxnType::ORDER_STATUS;
+    if (remaining < cum) return TxnType::ORDER_STATUS;
     cum += cfg.tpcc_delivery_pct;
-    if (r < cum) return TxnType::DELIVERY;
+    if (remaining < cum) return TxnType::DELIVERY;
     return TxnType::STOCK_LEVEL;
 }
 

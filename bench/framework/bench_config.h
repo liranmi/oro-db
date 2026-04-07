@@ -46,6 +46,7 @@ struct BenchConfig {
     double   tpcc_order_status_pct = 0.04;
     double   tpcc_delivery_pct     = 0.04;
     double   tpcc_stock_level_pct  = 0.04;
+    double   tpcc_consistency_pct  = 0.0;   // fraction of txns that run consistency checks (0 = disabled)
 
     // YCSB
     YcsbProfile  ycsb_profile      = YcsbProfile::A;

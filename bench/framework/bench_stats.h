@@ -30,6 +30,8 @@ struct alignas(64) ThreadStats {
     uint64_t tpcc_order_status_fail = 0;
     uint64_t tpcc_delivery_fail    = 0;
     uint64_t tpcc_stock_level_fail = 0;
+    uint64_t tpcc_consistency_ok   = 0;
+    uint64_t tpcc_consistency_fail = 0;
 };
 
 struct AggregateStats {
@@ -45,6 +47,7 @@ struct AggregateStats {
     uint64_t order_status_ok = 0, order_status_fail = 0;
     uint64_t delivery_ok = 0, delivery_fail = 0;
     uint64_t stock_level_ok = 0, stock_level_fail = 0;
+    uint64_t consistency_ok = 0, consistency_fail = 0;
 };
 
 inline AggregateStats Aggregate(const std::vector<ThreadStats>& per_thread, double elapsed_sec)
@@ -64,6 +67,8 @@ inline AggregateStats Aggregate(const std::vector<ThreadStats>& per_thread, doub
         agg.order_status_fail += ts.tpcc_order_status_fail;
         agg.delivery_fail += ts.tpcc_delivery_fail;
         agg.stock_level_fail += ts.tpcc_stock_level_fail;
+        agg.consistency_ok += ts.tpcc_consistency_ok;
+        agg.consistency_fail += ts.tpcc_consistency_fail;
     }
     uint64_t total = agg.total_commits + agg.total_aborts;
     agg.throughput_tps = (elapsed_sec > 0) ? (double)agg.total_commits / elapsed_sec : 0;
@@ -108,6 +113,8 @@ inline void PrintStats(const AggregateStats& s, bool is_tpcc, bool is_mixed = fa
         printf("  %-16s %8lu %8lu\n", "OrderStatus",  (unsigned long)s.order_status_ok,  (unsigned long)s.order_status_fail);
         printf("  %-16s %8lu %8lu\n", "Delivery",     (unsigned long)s.delivery_ok,      (unsigned long)s.delivery_fail);
         printf("  %-16s %8lu %8lu\n", "StockLevel",   (unsigned long)s.stock_level_ok,   (unsigned long)s.stock_level_fail);
+        if (s.consistency_ok + s.consistency_fail > 0)
+            printf("  %-16s %8lu %8lu\n", "Consistency",  (unsigned long)s.consistency_ok,   (unsigned long)s.consistency_fail);
     }
     printf("=========================\n");
 }
@@ -131,7 +138,11 @@ inline std::string StatsToJson(const AggregateStats& s, bool is_tpcc, bool is_mi
         j += "    \"payment\":       {\"ok\": " + std::to_string(s.payment_ok)       + ", \"fail\": " + std::to_string(s.payment_fail) + "},\n";
         j += "    \"order_status\":  {\"ok\": " + std::to_string(s.order_status_ok)  + ", \"fail\": " + std::to_string(s.order_status_fail) + "},\n";
         j += "    \"delivery\":      {\"ok\": " + std::to_string(s.delivery_ok)      + ", \"fail\": " + std::to_string(s.delivery_fail) + "},\n";
-        j += "    \"stock_level\":   {\"ok\": " + std::to_string(s.stock_level_ok)   + ", \"fail\": " + std::to_string(s.stock_level_fail) + "}\n";
+        j += "    \"stock_level\":   {\"ok\": " + std::to_string(s.stock_level_ok)   + ", \"fail\": " + std::to_string(s.stock_level_fail) + "}";
+        if (s.consistency_ok + s.consistency_fail > 0) {
+            j += ",\n    \"consistency\":   {\"ok\": " + std::to_string(s.consistency_ok)   + ", \"fail\": " + std::to_string(s.consistency_fail) + "}";
+        }
+        j += "\n";
         j += "  }";
     }
     j += "\n}\n";
