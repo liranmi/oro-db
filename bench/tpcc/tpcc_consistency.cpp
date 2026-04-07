@@ -41,6 +41,17 @@ static Row* Lookup(TxnManager* txn, Table* table, Index* ix,
 
 // ======================================================================
 // Condition 1: W_YTD = SUM(D_YTD) for each warehouse
+//
+// SQL equivalent (per warehouse):
+//   SELECT w.W_YTD, d_sum.total
+//     FROM warehouse w,
+//          (SELECT D_W_ID, SUM(D_YTD) AS total
+//             FROM district
+//            WHERE D_W_ID = :w_id
+//            GROUP BY D_W_ID) d_sum
+//    WHERE w.W_ID = :w_id
+//      AND w.W_ID = d_sum.D_W_ID
+//      AND w.W_YTD = d_sum.total;
 // ======================================================================
 static ConsistencyResult CheckCondition1(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
@@ -88,6 +99,14 @@ static ConsistencyResult CheckCondition1(TxnManager* txn, const TpccTables& t, u
 
 // ======================================================================
 // Condition 2: D_NEXT_O_ID - 1 = MAX(O_ID) for each (w,d)
+//
+// SQL equivalent (per warehouse, district):
+//   SELECT d.D_NEXT_O_ID, MAX(o.O_ID) AS max_oid
+//     FROM district d
+//     JOIN oorder o ON o.O_W_ID = d.D_W_ID AND o.O_D_ID = d.D_ID
+//    WHERE d.D_W_ID = :w_id AND d.D_ID = :d_id
+//    GROUP BY d.D_NEXT_O_ID
+//   HAVING d.D_NEXT_O_ID - 1 = MAX(o.O_ID);
 // ======================================================================
 static ConsistencyResult CheckCondition2(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
@@ -142,6 +161,13 @@ static ConsistencyResult CheckCondition2(TxnManager* txn, const TpccTables& t, u
 
 // ======================================================================
 // Condition 3: MAX(NO_O_ID) - MIN(NO_O_ID) + 1 = COUNT(*) in NEW_ORDER
+//
+// SQL equivalent (per warehouse, district):
+//   SELECT MAX(NO_O_ID) - MIN(NO_O_ID) + 1 AS expected,
+//          COUNT(*) AS actual
+//     FROM new_order
+//    WHERE NO_W_ID = :w_id AND NO_D_ID = :d_id
+//   HAVING MAX(NO_O_ID) - MIN(NO_O_ID) + 1 = COUNT(*);
 // ======================================================================
 static ConsistencyResult CheckCondition3(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
@@ -193,6 +219,16 @@ static ConsistencyResult CheckCondition3(TxnManager* txn, const TpccTables& t, u
 
 // ======================================================================
 // Condition 4: SUM(O_OL_CNT) = COUNT(ORDER_LINE) for each (w,d)
+//
+// SQL equivalent (per warehouse, district):
+//   SELECT o_agg.sum_cnt, ol_agg.cnt
+//     FROM (SELECT SUM(O_OL_CNT) AS sum_cnt
+//             FROM oorder
+//            WHERE O_W_ID = :w_id AND O_D_ID = :d_id) o_agg,
+//          (SELECT COUNT(*) AS cnt
+//             FROM order_line
+//            WHERE OL_W_ID = :w_id AND OL_D_ID = :d_id) ol_agg
+//    WHERE o_agg.sum_cnt = ol_agg.cnt;
 // ======================================================================
 static ConsistencyResult CheckCondition4(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
@@ -264,6 +300,29 @@ static ConsistencyResult CheckCondition4(TxnManager* txn, const TpccTables& t, u
 
 // ======================================================================
 // Condition 5: Delivery flag consistency
+//   For delivered orders (O_CARRIER_ID != 0): all OL_DELIVERY_D != 0
+//   For open orders (O_CARRIER_ID == 0): all OL_DELIVERY_D == 0
+//
+// SQL equivalent (per warehouse, district — should return 0 rows):
+//   -- Delivered orders with undelivered lines:
+//   SELECT o.O_ID, ol.OL_NUMBER
+//     FROM oorder o
+//     JOIN order_line ol ON ol.OL_W_ID = o.O_W_ID
+//                       AND ol.OL_D_ID = o.O_D_ID
+//                       AND ol.OL_O_ID = o.O_ID
+//    WHERE o.O_W_ID = :w_id AND o.O_D_ID = :d_id
+//      AND o.O_CARRIER_ID != 0
+//      AND ol.OL_DELIVERY_D = 0;
+//
+//   -- Open orders with delivery dates set:
+//   SELECT o.O_ID, ol.OL_NUMBER
+//     FROM oorder o
+//     JOIN order_line ol ON ol.OL_W_ID = o.O_W_ID
+//                       AND ol.OL_D_ID = o.O_D_ID
+//                       AND ol.OL_O_ID = o.O_ID
+//    WHERE o.O_W_ID = :w_id AND o.O_D_ID = :d_id
+//      AND o.O_CARRIER_ID = 0
+//      AND ol.OL_DELIVERY_D != 0;
 // ======================================================================
 static ConsistencyResult CheckCondition5(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
@@ -324,7 +383,17 @@ static ConsistencyResult CheckCondition5(TxnManager* txn, const TpccTables& t, u
 }
 
 // ======================================================================
-// Condition 6: O_OL_CNT = actual OL count per order
+// Condition 6: For each order, O_OL_CNT = actual count of its order-lines
+//
+// SQL equivalent (per warehouse, district — should return 0 rows):
+//   SELECT o.O_ID, o.O_OL_CNT, COUNT(ol.OL_NUMBER) AS actual_cnt
+//     FROM oorder o
+//     LEFT JOIN order_line ol ON ol.OL_W_ID = o.O_W_ID
+//                            AND ol.OL_D_ID = o.O_D_ID
+//                            AND ol.OL_O_ID = o.O_ID
+//    WHERE o.O_W_ID = :w_id AND o.O_D_ID = :d_id
+//    GROUP BY o.O_ID, o.O_OL_CNT
+//   HAVING o.O_OL_CNT != COUNT(ol.OL_NUMBER);
 // ======================================================================
 static ConsistencyResult CheckCondition6(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
 {
