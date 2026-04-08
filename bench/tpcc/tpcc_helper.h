@@ -284,6 +284,106 @@ inline MOT::RC ScanPrefix(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* i
 }
 
 // ======================================================================
+// RangeScan — RAII two-cursor range iterator for range-for loops.
+//
+// Wraps the two-cursor pattern (walking cursor + end sentinel) with
+// automatic visibility filtering via RowLookup.  Invisible rows are
+// skipped; errors stop iteration and are available via rc().
+//
+// Usage:
+//   auto [lo, hi] = PrefixKeyRange(...);
+//   RangeScan scan(txn, ix, lo, hi, AccessType::RD);
+//   for (Row* row : scan) { /* visible row */ }
+//   if (scan.rc() != RC_OK) { /* handle error */ }
+// ======================================================================
+class RangeScan {
+public:
+    RangeScan(MOT::TxnManager* txn, MOT::Index* ix,
+              uint64_t lo_packed, uint64_t hi_packed,
+              MOT::AccessType atype, uint32_t pid = 0)
+        : m_txn(txn), m_ix(ix), m_atype(atype), m_rc(MOT::RC_OK),
+          m_cursor(nullptr), m_end(nullptr), m_current(nullptr)
+    {
+        m_lo_key = BuildSearchKey(txn, ix, lo_packed);
+        m_hi_key = BuildSearchKey(txn, ix, hi_packed);
+        if (!m_lo_key || !m_hi_key) {
+            m_rc = MOT::RC_MEMORY_ALLOCATION_ERROR;
+            return;
+        }
+        bool found = false;
+        m_cursor = ix->Search(m_lo_key, true, true, pid, found);
+        m_end    = ix->Search(m_hi_key, true, true, pid, found);
+        advance_to_visible();
+    }
+
+    ~RangeScan()
+    {
+        if (m_cursor) m_cursor->Destroy();
+        if (m_end)    m_end->Destroy();
+    }
+
+    RangeScan(const RangeScan&) = delete;
+    RangeScan& operator=(const RangeScan&) = delete;
+    RangeScan(RangeScan&&) = delete;
+    RangeScan& operator=(RangeScan&&) = delete;
+
+    MOT::RC rc() const { return m_rc; }
+
+    struct Sentinel {};
+
+    struct Iterator {
+        RangeScan* scan;
+        MOT::Row* operator*() const { return scan->m_current; }
+        Iterator& operator++()      { scan->next(); return *this; }
+        bool operator!=(Sentinel) const { return scan->m_current != nullptr; }
+    };
+
+    Iterator begin() { return Iterator{this}; }
+    Sentinel end()   { return Sentinel{}; }
+
+private:
+    void next()
+    {
+        if (!m_cursor || m_rc != MOT::RC_OK) { m_current = nullptr; return; }
+        m_cursor->Next();
+        advance_to_visible();
+    }
+
+    void advance_to_visible()
+    {
+        m_current = nullptr;
+        while (m_cursor != nullptr && m_cursor->IsValid()) {
+            if (past_end()) break;
+
+            MOT::Sentinel* s = m_cursor->GetPrimarySentinel();
+            MOT::Row* row = m_txn->RowLookup(m_atype, s, m_rc);
+            if (m_rc != MOT::RC_OK) break;
+            if (row) { m_current = row; return; }
+            m_cursor->Next();
+        }
+    }
+
+    bool past_end() const
+    {
+        if (!m_end || !m_end->IsValid()) return false;
+        const MOT::Key* k0 = reinterpret_cast<const MOT::Key*>(m_cursor->GetKey());
+        const MOT::Key* k1 = reinterpret_cast<const MOT::Key*>(m_end->GetKey());
+        if (!k0 || !k1) return false;
+        return memcmp(k0->GetKeyBuf(), k1->GetKeyBuf(), m_ix->GetKeySizeNoSuffix()) >= 0;
+    }
+
+    MOT::TxnManager*    m_txn;
+    MOT::Index*         m_ix;
+    MOT::AccessType     m_atype;
+    MOT::RC             m_rc;
+    MOT::Key*           m_lo_key;
+    MOT::Key*           m_hi_key;
+    MOT::IndexIterator* m_cursor;
+    MOT::IndexIterator* m_end;
+    MOT::Row*           m_current;
+};
+
+// ======================================================================
 // Secondary index helpers for customer by-last-name lookup
 //
 // Key layout for ix_customer_last (non-unique):

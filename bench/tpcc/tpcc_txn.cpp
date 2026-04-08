@@ -333,15 +333,44 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
     RC rc = RC_OK;
     txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
+    // Case 1 (by_last_name = true):
+    // SQL: SELECT count(c_id) INTO :namecnt
+    //        FROM customer
+    //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
+    //
+    // SQL: DECLARE c_byname CURSOR FOR
+    //        SELECT c_balance, c_first, c_middle, c_last
+    //          FROM customer
+    //         WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
+    //         ORDER BY c_first
+    //      OPEN c_byname
+    //      -- position to middle row (namecnt/2 rounded up)
+    //      FETCH c_byname INTO :c_balance, :c_first, :c_middle, :c_last
+    //      CLOSE c_byname
+    //
+    // Case 2 (by_last_name = false):
+    // SQL: SELECT c_balance, c_first, c_middle, c_last
+    //        FROM customer
+    //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_id = :c_id
+
     if (p.by_last_name) { txn->Rollback(); return RC_ABORT; }
 
     Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
                         PackCustKey(p.w_id, p.d_id, p.c_id), rc);
     if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
 
-    // Find latest order for this customer using point lookups
-    // (reverse scan via iterator not yet working with packed keys)
-    // Read a few order-lines for the last known order
+    // SQL: SELECT o_id, o_entry_d, o_carrier_id
+    //        FROM orders
+    //       WHERE o_w_id = :w_id AND o_d_id = :d_id AND o_c_id = :c_id
+    //       ORDER BY o_id DESC
+    //      -- fetch first (latest) row
+
+    // SQL: SELECT ol_i_id, ol_supply_w_id, ol_quantity,
+    //             ol_amount, ol_delivery_d
+    //        FROM order_line
+    //       WHERE ol_w_id = :w_id AND ol_d_id = :d_id AND ol_o_id = :o_id
+
+    // TODO: find latest order for this customer, then read its order-lines
     rc = txn->Commit();
     txn->EndTransaction();
     return rc;
@@ -395,43 +424,23 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
         PackOlKey(p.w_id, p.d_id, o_id_low, 0),
         PackOlKey(p.w_id, p.d_id, d_next_o_id - 1, 0),
     OL_SUFFIX_BITS);
-    Key* lo_key = BuildSearchKey(txn, t.ix_order_line, lo);
-    Key* hi_key = BuildSearchKey(txn, t.ix_order_line, hi);
-    bool found = false;
     std::set<uint64_t> low_stock_items;
-    IndexIterator* cursor_0 = t.ix_order_line->Search(lo_key, true, true, txn->GetThdId(), found);
-    IndexIterator* cursor_1 = t.ix_order_line->Search(hi_key, true, true, txn->GetThdId(), found);
-    while (cursor_0 != nullptr && cursor_0->IsValid()) {
-        // Check if we passed the end
-        if (cursor_1 != nullptr && cursor_1->IsValid()) {
-            const Key* startKey = reinterpret_cast<const Key*>(cursor_0->GetKey());
-            const Key* endKey = reinterpret_cast<const Key*>(cursor_1->GetKey());
-            if (startKey && endKey &&
-                memcmp(startKey->GetKeyBuf(), endKey->GetKeyBuf(), t.ix_order_line->GetKeySizeNoSuffix()) >= 0)
-                break;
-        }
+    RangeScan scan(txn, t.ix_order_line, lo, hi, AccessType::RD);
+    for (Row* row : scan) {
+        uint64_t ol_i_id;
+        row->GetValue(OL_I_ID, ol_i_id);
 
-        Sentinel* s = cursor_0->GetPrimarySentinel();
-        Row* row = txn->RowLookup(AccessType::RD, s, rc);
+        Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, ol_i_id), rc);
         if (rc != RC_OK) break;
-        if (row) {
-            uint64_t ol_i_id;
-            row->GetValue(OL_I_ID, ol_i_id);
-
-            Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, ol_i_id), rc);
-            if (rc != RC_OK) break;
-            if (s_row) {
-                uint64_t s_quantity;
-                s_row->GetValue(STK::S_QUANTITY, s_quantity);
-                if (s_quantity < p.threshold) {
-                    low_stock_items.insert(ol_i_id);
-                }
+        if (s_row) {
+            uint64_t s_quantity;
+            s_row->GetValue(STK::S_QUANTITY, s_quantity);
+            if (s_quantity < p.threshold) {
+                low_stock_items.insert(ol_i_id);
             }
         }
-        cursor_0->Next();
     }
-    if (cursor_0) cursor_0->Destroy();
-    if (cursor_1) cursor_1->Destroy();
+    if (scan.rc() != RC_OK) rc = scan.rc();
 
     rc = txn->Commit();
     txn->EndTransaction();
