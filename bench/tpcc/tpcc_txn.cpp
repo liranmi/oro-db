@@ -17,6 +17,7 @@
 #include "index_iterator.h"
 #include "sentinel.h"
 #include "key.h"
+#include <set>
 
 #include <cstring>
 #include <ctime>
@@ -376,35 +377,61 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
     RC rc = RC_OK;
     txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
+    // SQL: SELECT d_next_o_id INTO :o_id
+    //        FROM district
+    //       WHERE d_w_id = :w_id AND d_id = :d_id
     Row* d_row = Lookup(txn, t.district, t.ix_district, AccessType::RD, PackDistKey(p.w_id, p.d_id), rc);
     if (!d_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
     uint64_t d_next_o_id; d_row->GetValue(DIST::D_NEXT_O_ID, d_next_o_id);
 
-    // Check stock for recent order-lines via point lookups
+    // SQL: SELECT COUNT(DISTINCT(s_i_id))
+    //        FROM order_line, stock
+    //       WHERE ol_w_id = :w_id AND ol_d_id = :d_id
+    //         AND ol_o_id < :o_id AND ol_o_id >= :o_id - 20
+    //         AND s_w_id = :w_id AND s_i_id = ol_i_id
+    //         AND s_quantity < :threshold
     uint64_t o_id_low = (d_next_o_id > 20) ? (d_next_o_id - 20) : 1;
-    uint64_t item_ids[20 * MAX_OL_CNT];
-    uint32_t item_count = 0;
-    for (uint64_t oid = o_id_low; oid < d_next_o_id; oid++) {
-        for (uint64_t ol = 1; ol <= MAX_OL_CNT; ol++) {
-            Row* olrow = Lookup(txn, t.order_line, t.ix_order_line, AccessType::RD,
-                                PackOlKey(p.w_id, p.d_id, oid, ol), rc);
-            if (!olrow) break;
-            uint64_t ol_i_id; olrow->GetValue(ORDL::OL_I_ID, ol_i_id);
-            item_ids[item_count++] = ol_i_id;
+    auto [lo, hi] = PrefixKeyRange(
+        PackOlKey(p.w_id, p.d_id, o_id_low, 0),
+        PackOlKey(p.w_id, p.d_id, d_next_o_id - 1, 0),
+    OL_SUFFIX_BITS);
+    Key* lo_key = BuildSearchKey(txn, t.ix_order_line, lo);
+    Key* hi_key = BuildSearchKey(txn, t.ix_order_line, hi);
+    bool found = false;
+    std::set<uint64_t> low_stock_items;
+    IndexIterator* cursor_0 = t.ix_order_line->Search(lo_key, true, true, txn->GetThdId(), found);
+    IndexIterator* cursor_1 = t.ix_order_line->Search(hi_key, true, true, txn->GetThdId(), found);
+    while (cursor_0 != nullptr && cursor_0->IsValid()) {
+        // Check if we passed the end
+        if (cursor_1 != nullptr && cursor_1->IsValid()) {
+            const Key* startKey = reinterpret_cast<const Key*>(cursor_0->GetKey());
+            const Key* endKey = reinterpret_cast<const Key*>(cursor_1->GetKey());
+            if (startKey && endKey &&
+                memcmp(startKey->GetKeyBuf(), endKey->GetKeyBuf(), t.ix_order_line->GetKeySizeNoSuffix()) >= 0)
+                break;
         }
-    }
-    std::sort(item_ids, item_ids + item_count);
-    uint32_t unique_count = (uint32_t)(std::unique(item_ids, item_ids + item_count) - item_ids);
 
-    uint64_t low_stock = 0;
-    for (uint32_t i = 0; i < unique_count; i++) {
-        uint64_t i_id = item_ids[i];
-        Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, i_id), rc);
-        if (!s_row) continue;
-        uint64_t sq; s_row->GetValue(STK::S_QUANTITY, sq);
-        if (sq < p.threshold) low_stock++;
+        Sentinel* s = cursor_0->GetPrimarySentinel();
+        Row* row = txn->RowLookup(AccessType::RD, s, rc);
+        if (rc != RC_OK) break;
+        if (row) {
+            uint64_t ol_i_id;
+            row->GetValue(OL_I_ID, ol_i_id);
+
+            Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, ol_i_id), rc);
+            if (rc != RC_OK) break;
+            if (s_row) {
+                uint64_t s_quantity;
+                s_row->GetValue(STK::S_QUANTITY, s_quantity);
+                if (s_quantity < p.threshold) {
+                    low_stock_items.insert(ol_i_id);
+                }
+            }
+        }
+        cursor_0->Next();
     }
-    (void)low_stock;
+    if (cursor_0) cursor_0->Destroy();
+    if (cursor_1) cursor_1->Destroy();
 
     rc = txn->Commit();
     txn->EndTransaction();

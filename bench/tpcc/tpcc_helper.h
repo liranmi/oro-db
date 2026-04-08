@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <utility>
 #include "bench_util.h"
 #include "row.h"
 #include "index.h"
@@ -59,50 +60,86 @@ inline void GenLastName(uint32_t num, char* buf, uint32_t bufSize)
 // In standalone mode, MOT uses the InternalKey path in BuildKey:
 //   row->SetInternalKey(lastCol, value) → BuildKey does CpKey(raw 8 bytes)
 //
-// All composite keys are packed into a single uint64. The packing must
-// preserve ordering so that range scans work correctly in MassTree.
-// Since all TPC-C IDs are small positive integers, simple shift+or works.
+// All composite keys are packed into a single uint64. The packing puts
+// the most significant field (W_ID) in the high bits. Pack functions
+// return big-endian so that MassTree's byte-string comparison preserves
+// the correct field ordering for range scans and prefix scans.
 //
 // Key length is always sizeof(uint64_t) = 8 bytes.
 // ======================================================================
 
 static constexpr uint32_t PACKED_KEY_LEN = sizeof(uint64_t);  // 8
 
+// Convert a uint64 to big-endian representation stored in a uint64.
+// MassTree compares keys as byte strings (via htonq), so BE encoding
+// makes numerical order match iteration order.
+inline uint64_t ToBE(uint64_t val)
+{
+    uint8_t buf[8];
+    EncodeU64BE(buf, val);
+    uint64_t result;
+    memcpy(&result, buf, 8);
+    return result;
+}
+
 // Warehouse: W_ID (max ~64K warehouses, plenty of room)
-inline uint64_t PackWhKey(uint64_t w_id) { return w_id; }
+inline uint64_t PackWhKey(uint64_t w_id) { return ToBE(w_id); }
 
 // District: (W_ID, D_ID) — D_ID max 10
+static constexpr uint32_t DIST_SUFFIX_BITS = 32;   // D_ID occupies low 32 bits
 inline uint64_t PackDistKey(uint64_t w_id, uint64_t d_id) {
-    return (w_id << 32) | d_id;
+    return ToBE((w_id << 32) | d_id);
 }
 
 // Customer: (W_ID, D_ID, C_ID) — C_ID max 3000
+static constexpr uint32_t CUST_SUFFIX_BITS = 20;   // C_ID occupies low 20 bits
 inline uint64_t PackCustKey(uint64_t w_id, uint64_t d_id, uint64_t c_id) {
-    return (w_id << 40) | (d_id << 20) | c_id;
+    return ToBE((w_id << 40) | (d_id << 20) | c_id);
 }
 
 // NewOrder / Order: (W_ID, D_ID, O_ID)
+static constexpr uint32_t ORDER_SUFFIX_BITS = 20;  // O_ID occupies low 20 bits
 inline uint64_t PackOrderKey(uint64_t w_id, uint64_t d_id, uint64_t o_id) {
-    return (w_id << 40) | (d_id << 20) | o_id;
+    return ToBE((w_id << 40) | (d_id << 20) | o_id);
 }
 
 // OrderLine: (W_ID, D_ID, O_ID, OL_NUMBER) — OL_NUMBER max 15
+static constexpr uint32_t OL_SUFFIX_BITS = 16;     // OL_NUMBER occupies low 16 bits
 inline uint64_t PackOlKey(uint64_t w_id, uint64_t d_id, uint64_t o_id, uint64_t ol_num) {
-    return (w_id << 48) | (d_id << 32) | (o_id << 16) | ol_num;
+    return ToBE((w_id << 48) | (d_id << 32) | (o_id << 16) | ol_num);
 }
 
 // Stock: (W_ID, I_ID) — I_ID max 100000
+static constexpr uint32_t STOCK_SUFFIX_BITS = 32;  // I_ID occupies low 32 bits
 inline uint64_t PackStockKey(uint64_t w_id, uint64_t i_id) {
-    return (w_id << 32) | i_id;
+    return ToBE((w_id << 32) | i_id);
 }
 
 // Item: I_ID
-inline uint64_t PackItemKey(uint64_t i_id) { return i_id; }
+inline uint64_t PackItemKey(uint64_t i_id) { return ToBE(i_id); }
+
+// Prefix range helper — builds start/end packed keys for range scans.
+// Pack the prefix fields with 0 in the suffix, pass the number of low bits
+// occupied by the suffix fields.  Returns {start, end} with suffix padded
+// to min (0) and max (all-1s).
+// The mask is BE-encoded to match the Pack* output.
+//
+// Examples:
+//   OrderLine (w,d,o prefix):
+//     auto [lo, hi] = PrefixKeyRange(PackOlKey(w,d,o_lo,0), PackOlKey(w,d,o_hi,0), OL_SUFFIX_BITS);
+//   NewOrder/Order (w,d prefix):
+//     auto [lo, hi] = PrefixKeyRange(PackOrderKey(w,d,0), PackOrderKey(w,d,0), ORDER_SUFFIX_BITS);
+inline std::pair<uint64_t, uint64_t> PrefixKeyRange(
+    uint64_t lo_packed, uint64_t hi_packed, uint32_t suffix_bits)
+{
+    uint64_t mask = ToBE((1ULL << suffix_bits) - 1);
+    return { lo_packed & ~mask, hi_packed | mask };
+}
 
 // History: surrogate (auto-increment)
 static std::atomic<uint64_t> g_history_surr_key{1ULL << 48};
 inline uint64_t NextHistoryKey() {
-    return g_history_surr_key.fetch_add(1, std::memory_order_relaxed);
+    return ToBE(g_history_surr_key.fetch_add(1, std::memory_order_relaxed));
 }
 
 // ======================================================================
@@ -143,13 +180,9 @@ inline uint64_t CountRows(MOT::Index* ix, uint32_t pid = 0)
     return count;
 }
 
-// Scan by key column value — full index scan with numeric filtering on the
-// packed _KEY column.  Iterates the entire index, reading each visible row's
-// key_col value and calling the callback only for rows whose key is within
-// [start_key, end_key] inclusive.  Rows outside the range are skipped.
-//
-// This works correctly regardless of MassTree's internal byte ordering because
-// the comparison is on the uint64 column value, not on raw key bytes.
+// Scan by key column value — full index scan with filtering on the packed
+// _KEY column.  Keys are stored as big-endian uint64 values, so we use
+// memcmp for range comparison (memcmp preserves BE ordering).
 inline MOT::RC ScanByKeyColumn(MOT::TxnManager* txn, MOT::Index* ix,
                                int key_col, uint64_t start_key, uint64_t end_key,
                                const std::function<bool(MOT::Row*)>& cb, uint32_t pid = 0)
@@ -164,7 +197,7 @@ inline MOT::RC ScanByKeyColumn(MOT::TxnManager* txn, MOT::Index* ix,
         if (row) {
             uint64_t key_val;
             row->GetValue(key_col, key_val);
-            if (key_val >= start_key && key_val <= end_key) {
+            if (memcmp(&key_val, &start_key, 8) >= 0 && memcmp(&key_val, &end_key, 8) <= 0) {
                 if (!cb(row)) break;
             }
         }
@@ -190,8 +223,8 @@ inline MOT::RC ScanRange(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* ix
         if (hi) ix->DestroyKey(hi);
         return MOT::RC_MEMORY_ALLOCATION_ERROR;
     }
-    KeyFillU64(lo, 0, start_key);
-    KeyFillU64(hi, 0, end_key);
+    lo->FillValue(reinterpret_cast<const uint8_t*>(&start_key), 8, 0);
+    hi->FillValue(reinterpret_cast<const uint8_t*>(&end_key), 8, 0);
 
     bool found = false;
     MOT::IndexIterator* it = ix->Search(lo, true, true, pid, found);
@@ -227,7 +260,7 @@ inline MOT::RC ScanPrefix(MOT::TxnManager* txn, MOT::Table* table, MOT::Index* i
 
     MOT::Key* key = ix->CreateNewSearchKey();
     if (!key) return MOT::RC_MEMORY_ALLOCATION_ERROR;
-    KeyFillU64(key, 0, prefix_key);
+    key->FillValue(reinterpret_cast<const uint8_t*>(&prefix_key), 8, 0);
 
     bool found = false;
     MOT::IndexIterator* it = ix->Search(key, true, true, pid, found);
