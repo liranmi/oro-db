@@ -23,6 +23,7 @@
 #include <cmath>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 using namespace MOT;
 
@@ -444,6 +445,243 @@ static ConsistencyResult CheckCondition6(TxnManager* txn, const TpccTables& t, u
 }
 
 // ======================================================================
+// Condition 7: For each new-order row, the corresponding order must
+// have O_CARRIER_ID = 0 (undelivered).  Conversely, every order with
+// O_CARRIER_ID = 0 must have a corresponding new-order row.
+//
+// SQL equivalent (should return 0 rows):
+//   -- New-order rows whose order has a carrier (should be empty):
+//   SELECT no.NO_O_ID
+//     FROM new_order no
+//     JOIN oorder o ON o.O_W_ID = no.NO_W_ID
+//                  AND o.O_D_ID = no.NO_D_ID
+//                  AND o.O_ID   = no.NO_O_ID
+//    WHERE no.NO_W_ID = :w_id AND no.NO_D_ID = :d_id
+//      AND o.O_CARRIER_ID != 0;
+//
+//   -- Open orders without a new-order row (should be empty):
+//   SELECT o.O_ID
+//     FROM oorder o
+//    WHERE o.O_W_ID = :w_id AND o.O_D_ID = :d_id
+//      AND o.O_CARRIER_ID = 0
+//      AND NOT EXISTS (SELECT 1 FROM new_order no
+//                       WHERE no.NO_W_ID = o.O_W_ID
+//                         AND no.NO_D_ID = o.O_D_ID
+//                         AND no.NO_O_ID = o.O_ID);
+// ======================================================================
+static ConsistencyResult CheckCondition7(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
+{
+    ConsistencyResult res;
+    res.name = "Condition 7: New-order ↔ O_CARRIER_ID consistency";
+    res.passed = true;
+
+    for (uint64_t w = 1; w <= num_wh; w++) {
+        for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
+            // Part A: every new-order row must have O_CARRIER_ID == 0
+            RC rc = ScanByKeyColumn(txn, t.ix_new_order, NORD::NO_KEY,
+                                    PackOrderKey(w, d, 1),
+                                    PackOrderKey(w, d, 0xFFFFF),
+                                    [&](Row* no_row) {
+                uint64_t no_o_id;
+                no_row->GetValue(NORD::NO_O_ID, no_o_id);
+
+                RC orc = RC_OK;
+                Row* o_row = Lookup(txn, t.order_tbl, t.ix_order,
+                                    AccessType::RD,
+                                    PackOrderKey(w, d, no_o_id), orc);
+                if (!o_row || orc != RC_OK) {
+                    res.passed = false;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "  W=%lu D=%lu NO_O_ID=%lu: order not found\n",
+                             (unsigned long)w, (unsigned long)d,
+                             (unsigned long)no_o_id);
+                    res.detail += buf;
+                    return true;
+                }
+
+                uint64_t carrier;
+                o_row->GetValue(ORD::O_CARRIER_ID, carrier);
+                if (carrier != 0) {
+                    res.passed = false;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "  W=%lu D=%lu NO_O_ID=%lu: in new_order but O_CARRIER_ID=%lu\n",
+                             (unsigned long)w, (unsigned long)d,
+                             (unsigned long)no_o_id, (unsigned long)carrier);
+                    res.detail += buf;
+                }
+                return true;
+            });
+            if (rc != RC_OK) {
+                res.passed = false;
+                res.detail += "  W=" + std::to_string(w) + " D=" + std::to_string(d)
+                              + ": new_order scan failed\n";
+            }
+
+            // Part B: every order with O_CARRIER_ID == 0 must have a new-order row
+            rc = ScanByKeyColumn(txn, t.ix_order, ORD::O_KEY,
+                                 PackOrderKey(w, d, 1),
+                                 PackOrderKey(w, d, 0xFFFFF),
+                                 [&](Row* o_row) {
+                uint64_t carrier;
+                o_row->GetValue(ORD::O_CARRIER_ID, carrier);
+                if (carrier != 0) return true;  // delivered — skip
+
+                uint64_t o_id;
+                o_row->GetValue(ORD::O_ID, o_id);
+
+                RC norc = RC_OK;
+                Row* no_row = Lookup(txn, t.new_order, t.ix_new_order,
+                                     AccessType::RD,
+                                     PackOrderKey(w, d, o_id), norc);
+                if (!no_row) {
+                    res.passed = false;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "  W=%lu D=%lu O_ID=%lu: O_CARRIER_ID=0 but no new_order row\n",
+                             (unsigned long)w, (unsigned long)d,
+                             (unsigned long)o_id);
+                    res.detail += buf;
+                }
+                return true;
+            });
+            if (rc != RC_OK) {
+                res.passed = false;
+                res.detail += "  W=" + std::to_string(w) + " D=" + std::to_string(d)
+                              + ": order scan failed\n";
+            }
+        }
+    }
+    return res;
+}
+
+// ======================================================================
+// Condition 8: For each customer, C_DELIVERY_CNT must equal the number
+// of orders delivered by the Delivery transaction during the benchmark.
+// Population pre-delivers orders 1..2100 but initializes C_DELIVERY_CNT=0,
+// so we only count delivered orders with O_ID >= 2101.
+//
+// SQL equivalent (should return 0 rows):
+//   SELECT c.C_ID, c.C_DELIVERY_CNT, COUNT(o.O_ID) AS delivered
+//     FROM customer c
+//     LEFT JOIN oorder o ON o.O_W_ID = c.C_W_ID
+//                       AND o.O_D_ID = c.C_D_ID
+//                       AND o.O_C_ID = c.C_ID
+//                       AND o.O_CARRIER_ID != 0
+//                       AND o.O_ID >= 2101
+//    WHERE c.C_W_ID = :w_id AND c.C_D_ID = :d_id
+//    GROUP BY c.C_ID, c.C_DELIVERY_CNT
+//   HAVING c.C_DELIVERY_CNT != COUNT(o.O_ID);
+// ======================================================================
+static ConsistencyResult CheckCondition8(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
+{
+    ConsistencyResult res;
+    res.name = "Condition 8: C_DELIVERY_CNT = delivered order count";
+    res.passed = true;
+
+    for (uint64_t w = 1; w <= num_wh; w++) {
+        for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
+            // Scan orders >= 2101 for (w,d), count delivered orders per customer
+            static constexpr uint64_t INIT_DELIVERED_END = 2101;
+            std::unordered_map<uint64_t, uint64_t> delivered_cnt;
+            RC rc = ScanByKeyColumn(txn, t.ix_order, ORD::O_KEY,
+                                    PackOrderKey(w, d, INIT_DELIVERED_END),
+                                    PackOrderKey(w, d, 0xFFFFF),
+                                    [&](Row* o_row) {
+                uint64_t carrier;
+                o_row->GetValue(ORD::O_CARRIER_ID, carrier);
+                if (carrier != 0) {
+                    uint64_t o_c_id;
+                    o_row->GetValue(ORD::O_C_ID, o_c_id);
+                    delivered_cnt[o_c_id]++;
+                }
+                return true;
+            });
+            if (rc != RC_OK) {
+                res.passed = false;
+                res.detail += "  W=" + std::to_string(w) + " D=" + std::to_string(d)
+                              + ": order scan failed\n";
+                continue;
+            }
+
+            // Check each customer's C_DELIVERY_CNT
+            for (uint64_t c = 1; c <= CUST_PER_DIST; c++) {
+                RC crc = RC_OK;
+                Row* c_row = Lookup(txn, t.customer, t.ix_customer,
+                                    AccessType::RD,
+                                    PackCustKey(w, d, c), crc);
+                if (!c_row || crc != RC_OK) continue;
+
+                uint64_t c_del_cnt;
+                c_row->GetValue(CUST::C_DELIVERY_CNT, c_del_cnt);
+                uint64_t expected = delivered_cnt.count(c) ? delivered_cnt[c] : 0;
+
+                if (c_del_cnt != expected) {
+                    res.passed = false;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "  W=%lu D=%lu C=%lu: C_DELIVERY_CNT=%lu but delivered orders=%lu\n",
+                             (unsigned long)w, (unsigned long)d,
+                             (unsigned long)c, (unsigned long)c_del_cnt,
+                             (unsigned long)expected);
+                    res.detail += buf;
+                }
+            }
+        }
+    }
+    return res;
+}
+
+// ======================================================================
+// Condition 9: For each order, O_OL_CNT must be between MIN_OL_CNT (5)
+// and MAX_OL_CNT (15) inclusive, per TPC-C Clause 2.4.1.3.
+//
+// SQL equivalent (should return 0 rows):
+//   SELECT o.O_ID, o.O_OL_CNT
+//     FROM oorder o
+//    WHERE o.O_W_ID = :w_id AND o.O_D_ID = :d_id
+//      AND (o.O_OL_CNT < 5 OR o.O_OL_CNT > 15);
+// ======================================================================
+static ConsistencyResult CheckCondition9(TxnManager* txn, const TpccTables& t, uint32_t num_wh)
+{
+    ConsistencyResult res;
+    res.name = "Condition 9: O_OL_CNT in [5..15]";
+    res.passed = true;
+
+    for (uint64_t w = 1; w <= num_wh; w++) {
+        for (uint64_t d = 1; d <= DIST_PER_WARE; d++) {
+            RC rc = ScanByKeyColumn(txn, t.ix_order, ORD::O_KEY,
+                                    PackOrderKey(w, d, 1),
+                                    PackOrderKey(w, d, 0xFFFFF),
+                                    [&](Row* o_row) {
+                uint64_t o_id, ol_cnt;
+                o_row->GetValue(ORD::O_ID, o_id);
+                o_row->GetValue(ORD::O_OL_CNT, ol_cnt);
+
+                if (ol_cnt < MIN_OL_CNT || ol_cnt > MAX_OL_CNT) {
+                    res.passed = false;
+                    char buf[256];
+                    snprintf(buf, sizeof(buf),
+                             "  W=%lu D=%lu O=%lu: O_OL_CNT=%lu (expected %u..%u)\n",
+                             (unsigned long)w, (unsigned long)d,
+                             (unsigned long)o_id, (unsigned long)ol_cnt,
+                             MIN_OL_CNT, MAX_OL_CNT);
+                    res.detail += buf;
+                }
+                return true;
+            });
+            if (rc != RC_OK) {
+                res.passed = false;
+                res.detail += "  W=" + std::to_string(w) + " D=" + std::to_string(d)
+                              + ": order scan failed\n";
+            }
+        }
+    }
+    return res;
+}
+
+// ======================================================================
 // Dispatch table
 // ======================================================================
 
@@ -456,6 +694,9 @@ static const CheckFn g_checks[NUM_CONSISTENCY_CHECKS] = {
     CheckCondition4,
     CheckCondition5,
     CheckCondition6,
+    CheckCondition7,
+    CheckCondition8,
+    CheckCondition9,
 };
 
 // ======================================================================

@@ -20,7 +20,7 @@
 namespace oro::tpcc {
 
 // Number of implemented consistency conditions
-static constexpr uint32_t NUM_CONSISTENCY_CHECKS = 6;
+static constexpr uint32_t NUM_CONSISTENCY_CHECKS = 9;
 
 // Result of a single consistency check
 struct ConsistencyResult {
