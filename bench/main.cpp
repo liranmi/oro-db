@@ -263,7 +263,7 @@ int main(int argc, char* argv[])
         ssize_t len = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
         if (len > 0) {
             exePath[len] = '\0';
-            snprintf(cfgBuf, sizeof(cfgBuf), "%s/../config/mot.conf", dirname(exePath));
+            snprintf(cfgBuf, sizeof(cfgBuf), "%s/mot.conf", dirname(exePath));
             cfgPath = cfgBuf;
         }
     }

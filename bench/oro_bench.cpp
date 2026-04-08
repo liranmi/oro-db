@@ -56,7 +56,7 @@ int main(int argc, char* argv[])
     char cfgBuf[PATH_MAX];
     if (len > 0) {
         exePath[len] = '\0';
-        snprintf(cfgBuf, sizeof(cfgBuf), "%s/../config/mot.conf", dirname(exePath));
+        snprintf(cfgBuf, sizeof(cfgBuf), "%s/mot.conf", dirname(exePath));
         cfgPath = cfgBuf;
     }
     MOT::MOTEngine* engine = MOT::MOTEngine::CreateInstance(cfgPath);

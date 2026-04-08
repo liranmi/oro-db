@@ -178,6 +178,12 @@ if(ORO_BUILD_BENCH)
         -Wno-unused-parameter
         -fpermissive
     )
+    # Copy mot.conf next to the binary so it is found automatically
+    add_custom_command(TARGET oro_bench POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            $<TARGET_FILE_DIR:oro_bench>/mot.conf
+    )
 endif()
 
 # =============================================================================

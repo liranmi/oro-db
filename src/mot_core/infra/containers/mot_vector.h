@@ -39,7 +39,14 @@ namespace MOT {
  * @tparam T The iterated item type.
  */
 template <typename T>
-class mot_vector_iterator : public std::iterator<std::bidirectional_iterator_tag, T> {
+class mot_vector_iterator {
+public:
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = T*;
+    using reference = T&;
+
 private:
     /** @var The iterated vector. */
     T* _vec;
@@ -127,7 +134,14 @@ public:
  * @tparam T The iterated item type.
  */
 template <typename T>
-class mot_vector_const_iterator : public std::iterator<std::bidirectional_iterator_tag, T> {
+class mot_vector_const_iterator {
+public:
+    using iterator_category = std::bidirectional_iterator_tag;
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const T*;
+    using reference = const T&;
+
 private:
     /** @var The iterated vector. */
     const T* _vec;
