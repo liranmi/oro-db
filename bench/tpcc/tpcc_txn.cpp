@@ -81,7 +81,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         orow->SetValue<uint64_t>(ORD::O_ALL_LOCAL, p.all_local ? 1 : 0);
         orow->SetInternalKey(ORD::O_KEY, PackOrderKey(p.w_id, p.d_id, o_id));
         rc = t.order_tbl->InsertRow(orow, txn);
-        if (rc != RC_OK) { t.order_tbl->DestroyRow(orow); txn->Rollback(); return rc; }
+        if (rc != RC_OK) { txn->Rollback(); return rc; }
     }
 
     // SQL: INSERT INTO NEW_ORDER
@@ -93,7 +93,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         norow->SetValue<uint64_t>(NORD::NO_W_ID, p.w_id);
         norow->SetInternalKey(NORD::NO_KEY, PackOrderKey(p.w_id, p.d_id, o_id));
         rc = t.new_order->InsertRow(norow, txn);
-        if (rc != RC_OK) { t.new_order->DestroyRow(norow); txn->Rollback(); return rc; }
+        if (rc != RC_OK) { txn->Rollback(); return rc; }
     }
 
     // For each order-line
@@ -145,7 +145,7 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
         SetStringValue(olrow, ORDL::OL_DIST_INFO, ol_dist_info);
         olrow->SetInternalKey(ORDL::OL_KEY, PackOlKey(p.w_id, p.d_id, o_id, (uint64_t)(ol + 1)));
         rc = t.order_line->InsertRow(olrow, txn);
-        if (rc != RC_OK) { t.order_line->DestroyRow(olrow); txn->Rollback(); return rc; }
+        if (rc != RC_OK) { txn->Rollback(); return rc; }
     }
 
     rc = txn->Commit();
