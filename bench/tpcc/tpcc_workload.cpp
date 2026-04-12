@@ -582,7 +582,12 @@ static void PopulateWarehouseThread(PopulateArgs args)
     }
     printf("  [W%lu] Done.\n", (unsigned long)args.w_id);
     args.engine->GetSessionManager()->DestroySessionContext(session);
-    args.engine->OnCurrentThreadEnding();
+    // NOTE: Do NOT call OnCurrentThreadEnding() here.  That call clears the
+    // thread's memory-pool caches (ClearTablesThreadMemoryCache), orphaning
+    // sub-pools that still hold live populated rows.  When worker threads
+    // later reuse the same thread-ID, MVCC operations on those rows trigger
+    // heap corruption.  The pthread-key destructor will free the thread-ID
+    // in the bitset automatically when this OS thread exits.
 }
 
 bool PopulateData(MOTEngine* engine, TpccTables& tables, uint32_t num_warehouses, bool small_schema)
