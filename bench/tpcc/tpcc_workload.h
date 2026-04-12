@@ -38,8 +38,9 @@ struct TpccTables {
     MOT::Index* ix_item       = nullptr;  // (I_ID)
     MOT::Index* ix_stock      = nullptr;  // (S_W_ID, S_I_ID)
 
-    // Secondary indexes
-    MOT::Index* ix_customer_last = nullptr;  // (C_W_ID, C_D_ID, C_LAST) — non-unique
+    // Secondary indexes (manually managed — not registered on tables)
+    MOT::Index* ix_customer_last    = nullptr;  // (C_W_ID, C_D_ID, C_LAST, C_FIRST) — non-unique
+    MOT::Index* ix_order_customer   = nullptr;  // (O_W_ID, O_D_ID, O_C_ID, O_ID)   — non-unique
 };
 
 // Create all TPC-C tables and indexes. Must be called within a transaction.
