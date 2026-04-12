@@ -62,6 +62,7 @@ static void PrintUsage(const char* prog)
     printf("  -M                   Full TPC-C mix (default): 45%% NewOrder, 43%% Payment, etc.\n");
     printf("  -Tp N                NewOrder/Payment only: N%% NewOrder, (100-N)%% Payment\n");
     printf("  --consistency-pct N  Mix N%% consistency checks into txn workload (0-100)\n");
+    printf("  --mvcc-test          MVCC test: 5%% consistency checks on thread 0 only\n");
     printf("\nYCSB options:\n");
     printf("  --profile A|B|C|D|E|F   Workload profile (default: A)\n");
     printf("  --records N             Number of records (default: 1000000)\n");
@@ -120,6 +121,8 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
                 return false;
             }
             cfg.tpcc_consistency_pct = pct / 100.0;
+        } else if (MatchArg(argv[i], "--mvcc-test")) {
+            cfg.tpcc_mvcc_test = true;
         } else if (MatchArg(argv[i], "--small")) {
             cfg.tpcc_small_schema = true;
         } else if (MatchArg(argv[i], "-M")) {
@@ -183,6 +186,15 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
         return false;
     }
 
+    if (cfg.tpcc_mvcc_test && cfg.tpcc_consistency_pct > 0.0) {
+        fprintf(stderr, "Error: --mvcc-test and --consistency-pct are mutually exclusive\n");
+        return false;
+    }
+    if (cfg.tpcc_mvcc_test && cfg.threads < 2) {
+        fprintf(stderr, "Error: --mvcc-test requires at least 2 threads\n");
+        return false;
+    }
+
     return true;
 }
 
@@ -237,6 +249,8 @@ int main(int argc, char* argv[])
             printf("  Mode:       -M (full TPC-C mix)\n");
         if (cfg.tpcc_consistency_pct > 0)
             printf("  Consistency: %.0f%% of txn mix\n", cfg.tpcc_consistency_pct * 100);
+        if (cfg.tpcc_mvcc_test)
+            printf("  MVCC test:  enabled (5%% consistency checks on thread 0)\n");
         if (cfg.tpcc_small_schema)
             printf("  Schema:     small (reduced columns)\n");
     } else {
@@ -387,6 +401,13 @@ int main(int argc, char* argv[])
                     }
 
                     auto txnType = oro::tpcc::PickTxnType(cfg, rng);
+
+                    // MVCC test: 5% of thread-0 transactions become consistency checks
+                    static constexpr double MVCC_TEST_PCT = 0.05;
+                    if (cfg.tpcc_mvcc_test && t == 0 && rng.NextDouble() < MVCC_TEST_PCT) {
+                        txnType = oro::tpcc::TxnType::CONSISTENCY;
+                    }
+
                     MOT::RC rc = MOT::RC_ABORT;
 
                     switch (txnType) {
