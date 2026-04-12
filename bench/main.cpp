@@ -390,12 +390,13 @@ int main(int argc, char* argv[])
                 // Each thread is assigned a home warehouse (round-robin)
                 uint64_t home_w = (t % cfg.tpcc_warehouses) + 1;
                 uint32_t num_wh = cfg.tpcc_warehouses;
-                uint64_t txns_left = cfg.max_txns;  // per-thread counter
+                uint64_t txns_left = cfg.max_txns;  // per-thread counter (0 = unlimited)
 
                 while (running.load(std::memory_order_relaxed)) {
-                    if (cfg.max_txns > 0 && txns_left == 0)
-                        break;
-                    txns_left--;
+                    if (cfg.max_txns > 0) {
+                        if (txns_left == 0) break;
+                        txns_left--;
+                    }
 
                     auto txnType = oro::tpcc::PickTxnType(cfg, rng);
 
@@ -475,12 +476,13 @@ int main(int argc, char* argv[])
 
                 oro::ycsb::UniformGenerator uniform_gen(cfg.ycsb_record_count);
                 oro::ycsb::ZipfianGenerator  zipfian_gen(cfg.ycsb_record_count, cfg.ycsb_zipfian_theta);
-                uint64_t txns_left = cfg.max_txns;  // per-thread counter
+                uint64_t txns_left = cfg.max_txns;  // per-thread counter (0 = unlimited)
 
                 while (running.load(std::memory_order_relaxed)) {
-                    if (cfg.max_txns > 0 && txns_left == 0)
-                        break;
-                    txns_left--;
+                    if (cfg.max_txns > 0) {
+                        if (txns_left == 0) break;
+                        txns_left--;
+                    }
 
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
                         txn, ycsb_tables, cfg.ycsb_profile,
