@@ -162,6 +162,130 @@ Key stubs:
 - `oro_index_factory.cpp`: Routes index creation to MassTree or StubIndex
 - `oro_recovery_stub.cpp`: No-op recovery manager for standalone mode
 
+## Engine API Guidelines
+
+The bench code talks directly to MOT engine APIs (no SQL layer, no FDW).
+
+### Transaction Lifecycle
+
+```
+txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+// ... operations ...
+rc = txn->Commit();   // or txn->Rollback();
+txn->EndTransaction();
+```
+
+### Row Lookup
+
+- **Point lookup (primary index):** Use `Lookup()` in `tpcc_helper.h`. Builds a key from a packed uint64, calls `txn->RowLookupByKey()`, destroys the key.
+- **From iterator:** `txn->RowLookup(AccessType, sentinel, rc)` — the only way to get a **visible** row. Raw `sentinel->GetData()` bypasses MVCC.
+- **AccessType:**
+  - `RD` — read-only, no lock
+  - `RD_FOR_UPDATE` — read with intent to update (acquires row-level lock for OCC). Required before `UpdateRow`.
+
+### Updating Rows
+
+```cpp
+rc = txn->UpdateRow(row, COLUMN_ID, new_value);  // RD_FOR_UPDATE → WR, creates MVCC draft
+Row* draft = txn->GetLastAccessedDraft();
+// Read original values from `row`, write additional columns to `draft`:
+draft->SetValue<T>(COLUMN_ID, value);
+```
+
+- First `UpdateRow` creates the draft. Subsequent columns can be written directly to the draft.
+- Do NOT call `row->SetValue()` on the original global row — bypasses MVCC entirely.
+
+### String Columns
+
+- **Write:** `SetStringValue(row, COL_ID, str)` — copies raw bytes up to column's declared size (friend function in `row.h`).
+- **Read:** `(const char*)row->GetValue(COL_ID)` — raw column bytes (no length prefix). Use `strnlen(ptr, col_size)` for actual length.
+- VARCHAR columns store raw bytes, NOT `ColumnVARCHAR::Pack/Unpack` format.
+
+### Primary Index Keys
+
+All primary indexes use a single packed `uint64_t` column as the key (the last column, e.g., `C_KEY`). Composite keys are encoded via shift+or (e.g., `PackCustKey(w_id, d_id, c_id)`). Stored via `row->SetInternalKey(lastCol, value)`, and `BuildKey` copies it directly (the "InternalKey path").
+
+### Key Encoding — Big-Endian
+
+MassTree compares keys as byte strings (lexicographic via `htonq`). All `Pack*` functions return **big-endian** uint64 values (via `ToBE()`) so byte-string comparison matches numerical ordering.
+
+- `BuildSearchKey` stores BE value directly via `FillValue`
+- `SetInternalKey` stores BE value via `SetValue<uint64_t>`
+- Do NOT use native integer comparison (`>=`, `<=`) on BE-encoded packed keys — wrong on little-endian
+- Helpers in `bench_util.h`: `ToBE(val)`, `EncodeU64BE(dst, val)`, `KeyFillU64(key, offset, val)`
+
+### Secondary Indexes
+
+The engine's `BuildKey` takes an InternalKey shortcut for all bench rows, so secondary indexes with different key compositions **cannot** use `BuildKey` or auto-population via `InsertRow`. They must be **manually managed**:
+
+```cpp
+Key* key = ix->CreateNewSearchKey();
+key->FillPattern(0x00, key->GetKeyLength(), 0);
+EncodeU64BE(buf, value); key->FillValue(buf, 8, offset);  // uint64 fields
+key->FillValue((const uint8_t*)str, len, offset);          // string fields
+// Non-unique indexes: append rowId at offset = user_key_len
+key->FillValue((uint8_t*)&rowId, 8, user_key_len);         // native endian
+ix->DestroyKey(key);
+```
+
+- Non-unique indexes: engine adds `NON_UNIQUE_INDEX_SUFFIX_LEN` (8 bytes) internally. Pass only user key length to `CreateIndexEx`.
+- Safe for TPC-C since customer/item rows are never inserted/deleted during the benchmark.
+
+### Index Iteration (Cursors)
+
+```cpp
+Key* searchKey = BuildOrCreateKey(...);
+bool found = false;
+IndexIterator* it = ix->Search(searchKey, true/*matchKey*/, true/*forward*/, pid, found);
+while (it != nullptr && it->IsValid()) {
+    const Key* cur = (const Key*)it->GetKey();
+    if (memcmp(cur->GetKeyBuf(), searchKey->GetKeyBuf(), prefixLen) != 0) break;
+    Sentinel* s = it->GetPrimarySentinel();
+    Row* r = txn->RowLookup(accessType, s, rc);
+    if (rc != RC_OK) break;
+    if (r) { /* visible row */ }
+    it->Next();
+}
+if (it) it->Destroy();
+ix->DestroyKey(searchKey);
+```
+
+Helpers: `ScanRange()`, `ScanPrefix()` in `tpcc_helper.h` (for uint64 packed keys).
+
+### Range Scans — Two-Cursor Pattern
+
+Based on the FDW `IsScanEnd` pattern. Use two cursors: one walks forward, one marks end boundary.
+
+```cpp
+auto [lo, hi] = PrefixKeyRange(PackOlKey(w,d,o_lo,0), PackOlKey(w,d,o_hi,0), OL_SUFFIX_BITS);
+Key* lo_key = BuildSearchKey(txn, ix, lo);
+Key* hi_key = BuildSearchKey(txn, ix, hi);
+bool found = false;
+IndexIterator* cursor_0 = ix->Search(lo_key, true, true, pid, found);
+IndexIterator* cursor_1 = ix->Search(hi_key, true, true, pid, found);
+
+while (cursor_0 != nullptr && cursor_0->IsValid()) {
+    if (cursor_1 != nullptr && cursor_1->IsValid()) {
+        const Key* k0 = reinterpret_cast<const Key*>(cursor_0->GetKey());
+        const Key* k1 = reinterpret_cast<const Key*>(cursor_1->GetKey());
+        if (k0 && k1 &&
+            memcmp(k0->GetKeyBuf(), k1->GetKeyBuf(), ix->GetKeySizeNoSuffix()) >= 0)
+            break;
+    }
+    Sentinel* s = cursor_0->GetPrimarySentinel();
+    Row* row = txn->RowLookup(AccessType::RD, s, rc);
+    if (rc != RC_OK) break;
+    if (row) { /* process */ }
+    cursor_0->Next();
+}
+if (cursor_0) cursor_0->Destroy();
+if (cursor_1) cursor_1->Destroy();
+txn->DestroyTxnKey(lo_key);
+txn->DestroyTxnKey(hi_key);
+```
+
+**Critical: use `>= 0`, not `> 0`** in the memcmp end check. `cursor_1` lands on the first key AT OR AFTER `hi_key`; `>= 0` stops BEFORE reaching that position.
+
 ## Code Conventions
 
 - **Language**: C++17, C11
@@ -174,6 +298,8 @@ Key stubs:
 - **Defines**: `MOT_STANDALONE=1` and `ENABLE_MOT=1` are always set. `ORO_HAS_MASSTREE=1` when MassTree is available.
 
 ## Important Notes for AI Assistants
+
+- **Do not make code changes that were not discussed or requested.** If you identify a potential issue, report it and wait for confirmation before modifying code.
 
 ### Build Considerations
 - Always verify changes compile: `make debug -sj` is the fastest feedback loop
