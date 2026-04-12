@@ -26,6 +26,15 @@ jobs:
       - name: Index tests
         run: ./build/oro_test_index
 
+      - name: TPC-C full mix (1 warehouse, 2 threads)
+        run: ./build/oro_bench --workload tpcc --warehouses 1 --threads 2 --max-txns 10000 --check
+
+      - name: TPC-C full mix (2 warehouses, 2 threads)
+        run: ./build/oro_bench --workload tpcc --warehouses 2 --threads 2 --max-txns 10000 --check
+
+      - name: TPC-C NewOrder/Payment only
+        run: ./build/oro_bench --workload tpcc -Tp 50 --warehouses 1 --threads 2 --max-txns 10000 --check
+
       - name: YCSB Profile A (update heavy)
         run: ./build/oro_bench --workload ycsb --profile A --threads 2 --records 100000 --check
 
