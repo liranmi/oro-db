@@ -149,6 +149,24 @@ RC RunNewOrder(TxnManager* txn, const TpccTables& t, const NewOrderParams& p, Fa
     }
 
     rc = txn->Commit();
+    // Maintain secondary index ix_order_customer after successful commit.
+    // Safe: the row is already committed and visible.
+    if (rc == RC_OK && t.ix_order_customer) {
+        bool found = false;
+        Key* pk = BuildSearchKey(txn, t.ix_order, PackOrderKey(p.w_id, p.d_id, o_id));
+        if (pk) {
+            IndexIterator* it = t.ix_order->Search(pk, true, true, 0, found);
+            if (it && it->IsValid()) {
+                Sentinel* ps = it->GetPrimarySentinel();
+                Row* row = ps ? ps->GetData() : nullptr;
+                if (row)
+                    InsertOrderCustIndex(t.ix_order_customer, row,
+                                         p.w_id, p.d_id, p.c_id, o_id);
+            }
+            if (it) it->Destroy();
+            txn->DestroyTxnKey(pk);
+        }
+    }
     txn->EndTransaction();
     return rc;
 }
@@ -333,44 +351,156 @@ RC RunOrderStatus(TxnManager* txn, const TpccTables& t, const OrderStatusParams&
     RC rc = RC_OK;
     txn->StartTransaction(txn->GetTransactionId(), ISOLATION_LEVEL::READ_COMMITED);
 
-    // Case 1 (by_last_name = true):
-    // SQL: SELECT count(c_id) INTO :namecnt
-    //        FROM customer
-    //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
-    //
-    // SQL: DECLARE c_byname CURSOR FOR
-    //        SELECT c_balance, c_first, c_middle, c_last
-    //          FROM customer
-    //         WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
-    //         ORDER BY c_first
-    //      OPEN c_byname
-    //      -- position to middle row (namecnt/2 rounded up)
-    //      FETCH c_byname INTO :c_balance, :c_first, :c_middle, :c_last
-    //      CLOSE c_byname
-    //
-    // Case 2 (by_last_name = false):
-    // SQL: SELECT c_balance, c_first, c_middle, c_last
-    //        FROM customer
-    //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_id = :c_id
+    // ---- Customer lookup ----
+    Row* c_row = nullptr;
+    uint64_t c_id = p.c_id;
 
-    if (p.by_last_name) { txn->Rollback(); return RC_ABORT; }
+    if (p.by_last_name) {
+        // SQL: SELECT count(c_id) INTO :namecnt
+        //        FROM customer
+        //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
+        //
+        // SQL: DECLARE c_byname CURSOR FOR
+        //        SELECT c_balance, c_first, c_middle, c_last
+        //          FROM customer
+        //         WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_last = :c_last
+        //         ORDER BY c_first
+        //      OPEN c_byname
+        //      -- position to middle row (namecnt/2 rounded up)
+        //      FETCH c_byname INTO :c_balance, :c_first, :c_middle, :c_last
+        //      CLOSE c_byname
+        Index* ix = t.ix_customer_last;
+        if (!ix) { txn->Rollback(); return RC_ABORT; }
 
-    Row* c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
-                        PackCustKey(p.w_id, p.d_id, p.c_id), rc);
-    if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+        Key* prefix = BuildCustLastSearchKey(ix, p.w_id, p.d_id, p.c_last);
+        if (!prefix) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
 
+        uint32_t namecnt = 0;
+        bool found = false;
+        IndexIterator* it = ix->Search(prefix, true, true, 0, found);
+        std::vector<uint64_t> c_id_vector;
+        while (it != nullptr && it->IsValid()) {
+            const Key* cur = reinterpret_cast<const Key*>(it->GetKey());
+            if (!cur || memcmp(cur->GetKeyBuf(), prefix->GetKeyBuf(), CUST_LAST_PREFIX_LEN) != 0)
+                break;
+            Sentinel* s = it->GetPrimarySentinel();
+            Row* r = txn->RowLookup(AccessType::RD, s, rc);
+            if (rc != RC_OK) break;
+            if (r) {
+                uint64_t it_c_id;
+                r->GetValue(CUST::C_ID, it_c_id);
+                c_id_vector.push_back(it_c_id);
+                namecnt++;
+            }
+            it->Next();
+        }
+        if (it) it->Destroy();
+        ix->DestroyKey(prefix);
+
+        if (rc != RC_OK || namecnt == 0) {
+            txn->Rollback();
+            return rc != RC_OK ? rc : RC_ABORT;
+        }
+
+        uint32_t mid = (namecnt + 1) / 2 - 1;
+        c_id = c_id_vector[mid];
+
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
+                       PackCustKey(p.w_id, p.d_id, c_id), rc);
+        if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+
+    } else {
+        // SQL: SELECT c_balance, c_first, c_middle, c_last
+        //        FROM customer
+        //       WHERE c_w_id = :w_id AND c_d_id = :d_id AND c_id = :c_id
+        c_row = Lookup(txn, t.customer, t.ix_customer, AccessType::RD,
+                       PackCustKey(p.w_id, p.d_id, p.c_id), rc);
+        if (!c_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+    }
+
+    // Read customer output fields (consumed by terminal, not stored)
+    (void)c_row->GetValue(CUST::C_BALANCE);
+    (void)c_row->GetValue(CUST::C_FIRST);
+    (void)c_row->GetValue(CUST::C_MIDDLE);
+    (void)c_row->GetValue(CUST::C_LAST);
+
+    // ---- Find latest order for this customer ----
     // SQL: SELECT o_id, o_entry_d, o_carrier_id
     //        FROM orders
     //       WHERE o_w_id = :w_id AND o_d_id = :d_id AND o_c_id = :c_id
     //       ORDER BY o_id DESC
     //      -- fetch first (latest) row
+    //
+    // Use secondary index ix_order_customer keyed by (W_ID, D_ID, C_ID, O_ID).
+    // Entries are sorted by O_ID within each customer, so the last visible
+    // entry in the prefix is the latest order.
+    Index* ix_oc = t.ix_order_customer;
+    if (!ix_oc) { txn->Rollback(); return RC_ABORT; }
 
+    Key* oc_prefix = BuildOrderCustSearchKey(ix_oc, p.w_id, p.d_id, c_id);
+    if (!oc_prefix) { txn->Rollback(); return RC_MEMORY_ALLOCATION_ERROR; }
+
+    uint64_t latest_o_id = 0;
+    bool     found_order = false;
+    bool     found = false;
+    IndexIterator* oc_it = ix_oc->Search(oc_prefix, true, true, 0, found);
+    while (oc_it != nullptr && oc_it->IsValid()) {
+        const Key* cur = reinterpret_cast<const Key*>(oc_it->GetKey());
+        if (!cur || memcmp(cur->GetKeyBuf(), oc_prefix->GetKeyBuf(), ORD_CUST_PREFIX_LEN) != 0)
+            break;
+        Sentinel* s = oc_it->GetPrimarySentinel();
+        Row* o_row = txn->RowLookup(AccessType::RD, s, rc);
+        if (rc != RC_OK) break;
+        if (o_row) {
+            uint64_t o_id;
+            o_row->GetValue(ORD::O_ID, o_id);
+            if (!found_order || o_id > latest_o_id) {
+                latest_o_id = o_id;
+                found_order = true;
+            }
+        }
+        oc_it->Next();
+    }
+    if (oc_it) oc_it->Destroy();
+    ix_oc->DestroyKey(oc_prefix);
+
+    if (rc != RC_OK) { txn->Rollback(); return rc; }
+
+    if (!found_order) {
+        // Customer has no orders — spec allows this (empty result)
+        rc = txn->Commit();
+        txn->EndTransaction();
+        return rc;
+    }
+
+    // Re-lookup the latest order to read its output fields
+    Row* latest_row = Lookup(txn, t.order_tbl, t.ix_order, AccessType::RD,
+                             PackOrderKey(p.w_id, p.d_id, latest_o_id), rc);
+    if (!latest_row || rc != RC_OK) { txn->Rollback(); return rc ? rc : RC_ABORT; }
+
+    (void)latest_row->GetValue(ORD::O_ENTRY_D);
+    (void)latest_row->GetValue(ORD::O_CARRIER_ID);
+
+    // ---- Read order-lines for the latest order ----
     // SQL: SELECT ol_i_id, ol_supply_w_id, ol_quantity,
     //             ol_amount, ol_delivery_d
     //        FROM order_line
     //       WHERE ol_w_id = :w_id AND ol_d_id = :d_id AND ol_o_id = :o_id
+    auto [ol_lo, ol_hi] = PrefixKeyRange(
+        PackOlKey(p.w_id, p.d_id, latest_o_id, 0),
+        PackOlKey(p.w_id, p.d_id, latest_o_id, 0),
+        OL_SUFFIX_BITS);
 
-    // TODO: find latest order for this customer, then read its order-lines
+    RangeScan ol_scan(txn, t.ix_order_line, ol_lo, ol_hi, AccessType::RD);
+    for (Row* ol_row : ol_scan) {
+        (void)ol_row->GetValue(ORDL::OL_I_ID);
+        (void)ol_row->GetValue(ORDL::OL_SUPPLY_W_ID);
+        (void)ol_row->GetValue(ORDL::OL_QUANTITY);
+        (void)ol_row->GetValue(ORDL::OL_AMOUNT);
+        (void)ol_row->GetValue(ORDL::OL_DELIVERY_D);
+    }
+    if (ol_scan.rc() != RC_OK) { txn->Rollback(); return ol_scan.rc(); }
+
     rc = txn->Commit();
     txn->EndTransaction();
     return rc;

@@ -231,6 +231,20 @@ bool CreateSchema(TxnManager* txn, TpccTables& t, bool small_schema)
     if (rc != RC_OK) { fprintf(stderr, "CreateTable oorder: %s\n", RcToString(rc)); return false; }
     t.ix_order = MakePrimaryIndex(txn, t.order_tbl, "ix_order");
     if (!t.ix_order) return false;
+    // Secondary index: (O_W_ID, O_D_ID, O_C_ID, O_ID) — non-unique, manually managed.
+    // Used by OrderStatus to find latest order for a customer.
+    {
+        RC irc = RC_OK;
+        t.ix_order_customer = IndexFactory::CreateIndexEx(
+            IndexOrder::INDEX_ORDER_SECONDARY, IndexingMethod::INDEXING_METHOD_TREE,
+            DEFAULT_TREE_FLAVOR, false /*non-unique*/, ORD_CUST_USER_KEY_LEN,
+            "ix_order_customer", irc, nullptr);
+        if (!t.ix_order_customer || irc != RC_OK) {
+            fprintf(stderr, "ERROR: Failed to create ix_order_customer: %s\n", RcToString(irc));
+            return false;
+        }
+        t.ix_order_customer->SetTable(t.order_tbl);
+    }
 
     // ---- ORDER-LINE (Clause 1.3.7) ----
     t.order_line = new Table();
@@ -619,6 +633,14 @@ bool PopulateData(MOTEngine* engine, TpccTables& tables, uint32_t num_warehouses
         printf("  Building ix_customer_last secondary index...\n");
         PopulateCustLastIndex(tables.ix_customer_last, tables.ix_customer,
                               tables.customer);
+    }
+
+    // Populate the manually-managed order secondary index (by-customer).
+    // Must run after all warehouse threads finish so all order rows exist.
+    if (tables.ix_order_customer && tables.ix_order) {
+        printf("  Building ix_order_customer secondary index...\n");
+        PopulateOrderCustIndex(tables.ix_order_customer, tables.ix_order,
+                               tables.order_tbl);
     }
 
     printf("[Population] Done.\n\n");

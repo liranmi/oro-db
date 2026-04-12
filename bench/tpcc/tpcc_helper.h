@@ -477,6 +477,100 @@ inline void PopulateCustLastIndex(MOT::Index* ix_sec, MOT::Index* ix_pri,
 }
 
 // ======================================================================
+// Secondary index helpers for order-by-customer lookup (OrderStatus)
+//
+// Key layout for ix_order_customer (non-unique):
+//   [O_W_ID:8 BE][O_D_ID:8 BE][O_C_ID:8 BE][O_ID:8 BE][rowId:8]
+//   User portion = 32 bytes, suffix = 8 bytes, total = 40 bytes.
+// ======================================================================
+
+static constexpr uint16_t ORD_CUST_USER_KEY_LEN = 8 + 8 + 8 + 8;  // 32
+static constexpr uint16_t ORD_CUST_PREFIX_LEN   = 8 + 8 + 8;       // 24 (W_ID+D_ID+C_ID)
+
+// Fill a secondary key buffer with (w_id, d_id, c_id, o_id) in BE order.
+// Helper used by both population and per-insert maintenance.
+inline void FillOrderCustKey(MOT::Key* skey, uint64_t w_id, uint64_t d_id,
+                             uint64_t c_id, uint64_t o_id)
+{
+    uint8_t buf8[8];
+    EncodeU64BE(buf8, w_id);
+    skey->FillValue(buf8, 8, 0);
+    EncodeU64BE(buf8, d_id);
+    skey->FillValue(buf8, 8, 8);
+    EncodeU64BE(buf8, c_id);
+    skey->FillValue(buf8, 8, 16);
+    EncodeU64BE(buf8, o_id);
+    skey->FillValue(buf8, 8, 24);
+}
+
+// Build a search key for ix_order_customer (prefix: W_ID, D_ID, C_ID).
+// Caller must destroy via ix->DestroyKey().
+inline MOT::Key* BuildOrderCustSearchKey(MOT::Index* ix,
+                                         uint64_t w_id, uint64_t d_id,
+                                         uint64_t c_id)
+{
+    MOT::Key* key = ix->CreateNewSearchKey();
+    if (!key) return nullptr;
+    key->FillPattern(0x00, key->GetKeyLength(), 0);
+
+    uint8_t buf8[8];
+    EncodeU64BE(buf8, w_id);
+    key->FillValue(buf8, 8, 0);
+    EncodeU64BE(buf8, d_id);
+    key->FillValue(buf8, 8, 8);
+    EncodeU64BE(buf8, c_id);
+    key->FillValue(buf8, 8, 16);
+    return key;
+}
+
+// Insert a single order row into ix_order_customer.
+// Called after NewOrder commit to maintain the secondary index.
+inline void InsertOrderCustIndex(MOT::Index* ix, MOT::Row* row,
+                                 uint64_t w_id, uint64_t d_id,
+                                 uint64_t c_id, uint64_t o_id,
+                                 uint32_t pid = 0)
+{
+    MOT::Key* skey = ix->CreateNewSearchKey();
+    if (!skey) return;
+    skey->FillPattern(0x00, skey->GetKeyLength(), 0);
+    FillOrderCustKey(skey, w_id, d_id, c_id, o_id);
+
+    uint64_t rowId = row->GetRowId();
+    skey->FillValue(reinterpret_cast<const uint8_t*>(&rowId),
+                    NON_UNIQUE_INDEX_SUFFIX_LEN,
+                    ORD_CUST_USER_KEY_LEN);
+
+    ix->IndexInsert(skey, row, pid);
+    ix->DestroyKey(skey);
+}
+
+// Populate ix_order_customer by iterating the primary order index.
+// Must be called after all orders are loaded.
+inline void PopulateOrderCustIndex(MOT::Index* ix_sec, MOT::Index* ix_pri,
+                                   MOT::Table* table, uint32_t pid = 0)
+{
+    uint64_t count = 0;
+    MOT::IndexIterator* it = ix_pri->Begin(pid);
+    while (it != nullptr && it->IsValid()) {
+        MOT::Sentinel* ps = it->GetPrimarySentinel();
+        MOT::Row* row = ps ? ps->GetData() : nullptr;
+        if (!row) { it->Next(); continue; }
+
+        uint64_t w_id, d_id, c_id, o_id;
+        row->GetValue(ORD::O_W_ID, w_id);
+        row->GetValue(ORD::O_D_ID, d_id);
+        row->GetValue(ORD::O_C_ID, c_id);
+        row->GetValue(ORD::O_ID, o_id);
+
+        InsertOrderCustIndex(ix_sec, row, w_id, d_id, c_id, o_id, pid);
+        count++;
+        it->Next();
+    }
+    if (it) it->Destroy();
+    fprintf(stderr, "  ix_order_customer: populated %lu entries\n", (unsigned long)count);
+}
+
+// ======================================================================
 // Per-table row debug printers
 //
 // Each function prints all data columns of a row to stderr.
