@@ -51,8 +51,8 @@ static void PrintUsage(const char* prog)
     printf("Usage: %s --workload tpcc|ycsb [options]\n\n", prog);
     printf("Common options:\n");
     printf("  --threads N          Worker threads (default: 1)\n");
-    printf("  --duration N         Benchmark duration in seconds (default: 10)\n");
-    printf("  --max-txns N         Stop after N total transactions (overrides --duration)\n");
+    printf("  --max-txns N         Transactions per thread (default: 100000)\n");
+    printf("  --duration N         Run for N seconds instead of a fixed txn count\n");
     printf("  --json FILE          Write results to JSON file\n");
     printf("  --config FILE        Override mot.conf path\n");
     printf("  --check              Run post-benchmark data consistency checks\n");
@@ -100,10 +100,12 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
             workload_set = true;
         } else if (MatchArg(argv[i], "--threads") && i + 1 < argc) {
             cfg.threads = (uint32_t)atoi(argv[++i]);
-        } else if (MatchArg(argv[i], "--duration") && i + 1 < argc) {
-            cfg.duration_sec = (uint32_t)atoi(argv[++i]);
         } else if (MatchArg(argv[i], "--max-txns") && i + 1 < argc) {
             cfg.max_txns = (uint64_t)atol(argv[++i]);
+            cfg.duration_sec = 0;
+        } else if (MatchArg(argv[i], "--duration") && i + 1 < argc) {
+            cfg.duration_sec = (uint32_t)atoi(argv[++i]);
+            cfg.max_txns = 0;
         } else if (MatchArg(argv[i], "--json") && i + 1 < argc) {
             cfg.json_output = true;
             cfg.json_file = argv[++i];
@@ -235,10 +237,10 @@ int main(int argc, char* argv[])
     printf("=== oro-db benchmark ===\n");
     printf("  Workload:   %s\n", WorkloadName(cfg.workload));
     printf("  Threads:    %u\n", cfg.threads);
-    if (cfg.max_txns > 0)
-        printf("  Max txns:   %lu\n", (unsigned long)cfg.max_txns);
-    else
+    if (cfg.duration_sec > 0)
         printf("  Duration:   %u sec\n", cfg.duration_sec);
+    else
+        printf("  Txns/thread: %lu\n", (unsigned long)cfg.max_txns);
 
     if (cfg.workload == oro::WorkloadType::TPCC) {
         printf("  Warehouses: %u\n", cfg.tpcc_warehouses);
@@ -359,15 +361,14 @@ int main(int argc, char* argv[])
     ddl_session = nullptr;
 
     // --- Run benchmark ---
-    if (cfg.max_txns > 0)
-        printf("[4] Running %s benchmark for %lu txns with %u threads...\n",
-               WorkloadName(cfg.workload), (unsigned long)cfg.max_txns, cfg.threads);
-    else
+    if (cfg.duration_sec > 0)
         printf("[4] Running %s benchmark for %u seconds with %u threads...\n",
                WorkloadName(cfg.workload), cfg.duration_sec, cfg.threads);
+    else
+        printf("[4] Running %s benchmark for %lu txns/thread with %u threads...\n",
+               WorkloadName(cfg.workload), (unsigned long)cfg.max_txns, cfg.threads);
 
     std::atomic<bool> running{true};
-    std::atomic<uint64_t> txns_remaining{cfg.max_txns};  // 0 = unlimited
     std::vector<oro::ThreadStats> all_stats(cfg.threads);
     std::vector<std::thread> workers;
     workers.reserve(cfg.threads);
@@ -389,16 +390,12 @@ int main(int argc, char* argv[])
                 // Each thread is assigned a home warehouse (round-robin)
                 uint64_t home_w = (t % cfg.tpcc_warehouses) + 1;
                 uint32_t num_wh = cfg.tpcc_warehouses;
+                uint64_t txns_left = cfg.max_txns;  // per-thread counter
 
                 while (running.load(std::memory_order_relaxed)) {
-                    // Check transaction count limit (atomic to avoid TOCTOU race)
-                    if (cfg.max_txns > 0) {
-                        uint64_t prev = txns_remaining.fetch_sub(1, std::memory_order_relaxed);
-                        if (prev == 0) {
-                            txns_remaining.fetch_add(1, std::memory_order_relaxed);
-                            break;
-                        }
-                    }
+                    if (cfg.max_txns > 0 && txns_left == 0)
+                        break;
+                    txns_left--;
 
                     auto txnType = oro::tpcc::PickTxnType(cfg, rng);
 
@@ -478,15 +475,12 @@ int main(int argc, char* argv[])
 
                 oro::ycsb::UniformGenerator uniform_gen(cfg.ycsb_record_count);
                 oro::ycsb::ZipfianGenerator  zipfian_gen(cfg.ycsb_record_count, cfg.ycsb_zipfian_theta);
+                uint64_t txns_left = cfg.max_txns;  // per-thread counter
 
                 while (running.load(std::memory_order_relaxed)) {
-                    if (cfg.max_txns > 0) {
-                        uint64_t prev = txns_remaining.fetch_sub(1, std::memory_order_relaxed);
-                        if (prev == 0) {
-                            txns_remaining.fetch_add(1, std::memory_order_relaxed);
-                            break;
-                        }
-                    }
+                    if (cfg.max_txns > 0 && txns_left == 0)
+                        break;
+                    txns_left--;
 
                     MOT::RC rc = oro::ycsb::RunYcsbTxn(
                         txn, ycsb_tables, cfg.ycsb_profile,
@@ -506,21 +500,18 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Termination: either by time or by transaction count
-    if (cfg.max_txns > 0) {
-        // Count-limited: just wait for workers to drain the counter
-        for (auto& w : workers)
-            w.join();
-    } else {
+    // Termination: count-based (default) or time-based (--duration)
+    if (cfg.duration_sec > 0) {
         // Time-limited: timer thread signals stop
         std::thread timer([&]() {
             std::this_thread::sleep_for(std::chrono::seconds(cfg.duration_sec));
             running.store(false, std::memory_order_relaxed);
         });
         timer.join();
-        for (auto& w : workers)
-            w.join();
     }
+    // Wait for all workers (barrier: total time = slowest thread)
+    for (auto& w : workers)
+        w.join();
 
     auto end_time = Clock::now();
     double elapsed_sec = std::chrono::duration<double>(end_time - start_time).count();
