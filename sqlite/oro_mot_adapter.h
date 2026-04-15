@@ -106,6 +106,11 @@ int oroMotPrev(OroMotCursor* pCur, int* pEof);
  *   >0 = positioned AFTER the target (cursor key > target) */
 int oroMotSeekRowid(OroMotCursor* pCur, int64_t rowid, int* pRes);
 
+/* Range seek operations: position cursor at first row matching cmp vs. rowid.
+ * cmp_op: 0=GT (>), 1=GE (>=), 2=LT (<), 3=LE (<=)
+ * *pEof=1 if no row matches. */
+int oroMotSeekCmp(OroMotCursor* pCur, int64_t rowid, int cmp_op, int* pEof);
+
 /* Get the rowid of the current row. */
 int oroMotRowid(OroMotCursor* pCur, int64_t* pRowid);
 

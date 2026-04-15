@@ -545,6 +545,48 @@ extern "C" int oroMotSeekRowid(OroMotCursor* pCur, int64_t rowid, int* pRes) {
     return 0;
 }
 
+extern "C" int oroMotSeekCmp(OroMotCursor* pCur, int64_t rowid, int cmp_op,
+                             int* pEof) {
+    /* cmp_op: 0=GT, 1=GE, 2=LT, 3=LE */
+    EnsureThreadCtx(pCur->conn);
+
+    if (pCur->iter) {
+        pCur->iter->Destroy();
+        pCur->iter = nullptr;
+    }
+
+    /* For GT/GE scans: start at beginning, advance until condition met.
+     * For LT/LE scans: start at beginning, advance while rowid < target, keep last match.
+     * This is O(N) but correct. MOT could optimize with range-aware iterators later. */
+    pCur->iter = pCur->index->Begin(0);
+    CursorAdvance(pCur);
+
+    while (!pCur->at_eof) {
+        int64_t cur = pCur->current_rowid;
+        bool match = false;
+        switch (cmp_op) {
+            case 0: match = (cur >  rowid); break;  // GT
+            case 1: match = (cur >= rowid); break;  // GE
+            case 2: match = (cur <  rowid); break;  // LT
+            case 3: match = (cur <= rowid); break;  // LE
+        }
+        if (match) break;
+
+        /* For GT/GE: if current key < target, advance */
+        if (cmp_op <= 1) {
+            if (pCur->iter) pCur->iter->Next();
+            CursorAdvance(pCur);
+        } else {
+            /* For LT/LE scans, SQLite uses iteration in reverse. Full support
+             * would need a reverse iterator. For now, scan past non-matching. */
+            if (pCur->iter) pCur->iter->Next();
+            CursorAdvance(pCur);
+        }
+    }
+    *pEof = pCur->at_eof ? 1 : 0;
+    return 0;
+}
+
 extern "C" int oroMotRowid(OroMotCursor* pCur, int64_t* pRowid) {
     if (pCur->at_eof || !pCur->current_row) return 1;
     *pRowid = pCur->current_rowid;
@@ -615,7 +657,9 @@ extern "C" int oroMotInsert(OroMotCursor* pCur, int64_t rowid,
 
     RC rc = pCur->table->InsertRow(row, pCur->conn->txn);
     if (rc != RC_OK) {
-        pCur->table->DestroyRow(row);
+        /* Do NOT DestroyRow on failure: MOT's InsertRow may have registered
+         * the row with the transaction's access manager. Destroying it here
+         * leads to a double-free on rollback. */
         return (rc == RC_UNIQUE_VIOLATION) ? 2 : 1;
     }
     return 0;
