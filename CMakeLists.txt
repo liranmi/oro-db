@@ -202,6 +202,148 @@ if(ORO_BUILD_TESTS)
     )
 endif()
 
+# =============================================================================
+# SQLite virtual table interface
+# =============================================================================
+option(ORO_BUILD_SQLITE "Build SQLite virtual table interface" OFF)
+
+if(ORO_BUILD_SQLITE)
+    # Bundled SQLite amalgamation in third_party/sqlite
+    set(SQLITE3_SRC_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite")
+    if(NOT EXISTS "${SQLITE3_SRC_DIR}/sqlite3.h")
+        message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE3_SRC_DIR}\n"
+                "Download from https://www.sqlite.org/download.html and extract into third_party/sqlite/")
+    endif()
+
+    add_library(sqlite3_lib STATIC ${SQLITE3_SRC_DIR}/sqlite3.c)
+    target_include_directories(sqlite3_lib PUBLIC ${SQLITE3_SRC_DIR})
+    target_compile_definitions(sqlite3_lib PUBLIC
+        SQLITE_ENABLE_COLUMN_METADATA=1
+    )
+    target_compile_options(sqlite3_lib PRIVATE -Wno-unused-parameter)
+    target_link_libraries(sqlite3_lib PUBLIC dl)
+
+    # MOT adapter: separate library with C linkage that sqlite3_lib will call into.
+    # Built before oro_sqlite_vtab so it can be linked between sqlite3_lib and the executable.
+    add_library(oro_mot_adapter STATIC
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_mot_adapter.cpp
+    )
+    target_link_libraries(oro_mot_adapter PUBLIC oro)
+    target_include_directories(oro_mot_adapter PUBLIC
+        ${CMAKE_SOURCE_DIR}/sqlite
+        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${CMAKE_SOURCE_DIR}/bench/framework
+        ${MOT_INCLUDE_DIRS}
+        ${SQLITE3_SRC_DIR}
+    )
+    target_compile_options(oro_mot_adapter PRIVATE
+        -Wno-unused-parameter
+        -fpermissive
+    )
+
+    # Make sqlite3_lib link against the adapter (forward declarations resolve here)
+    target_link_libraries(sqlite3_lib PUBLIC oro_mot_adapter)
+
+    set(SQLITE_VTAB_INCLUDE_DIRS
+        ${CMAKE_SOURCE_DIR}/sqlite
+        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${CMAKE_SOURCE_DIR}/bench/framework
+    )
+
+    add_library(oro_sqlite_vtab STATIC
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_vtab.cpp
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_bestindex.cpp
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_update.cpp
+    )
+    target_link_libraries(oro_sqlite_vtab PUBLIC oro sqlite3_lib)
+    target_include_directories(oro_sqlite_vtab PRIVATE
+        ${SQLITE_VTAB_INCLUDE_DIRS}
+        ${MOT_INCLUDE_DIRS}
+    )
+    target_compile_options(oro_sqlite_vtab PRIVATE
+        -Wno-unused-parameter
+        -fpermissive
+    )
+
+    # Test executable (virtual table path)
+    add_executable(oro_test_sqlite
+        ${CMAKE_SOURCE_DIR}/test/test_sqlite.cpp
+    )
+    target_link_libraries(oro_test_sqlite PRIVATE oro_sqlite_vtab)
+    target_include_directories(oro_test_sqlite PRIVATE
+        ${SQLITE_VTAB_INCLUDE_DIRS}
+        ${MOT_INCLUDE_DIRS}
+    )
+    target_compile_options(oro_test_sqlite PRIVATE
+        -Wno-unused-parameter
+        -fpermissive
+    )
+    # Copy mot.conf next to the test binary
+    add_custom_command(TARGET oro_test_sqlite POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            $<TARGET_FILE_DIR:oro_test_sqlite>/mot.conf
+    )
+
+    # Test executable (CREATE MOT TABLE / engine integration path)
+    add_executable(oro_test_mot_engine
+        ${CMAKE_SOURCE_DIR}/test/test_mot_engine.cpp
+    )
+    target_link_libraries(oro_test_mot_engine PRIVATE oro_mot_adapter sqlite3_lib)
+    target_include_directories(oro_test_mot_engine PRIVATE
+        ${CMAKE_SOURCE_DIR}/sqlite
+        ${SQLITE3_SRC_DIR}
+    )
+    add_custom_command(TARGET oro_test_mot_engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            $<TARGET_FILE_DIR:oro_test_mot_engine>/mot.conf
+    )
+
+    # Interactive shell: oro_shell (SQLite CLI + oro-db engine)
+    # Compile shell.c with main renamed to sqlite3_shell_main
+    add_library(sqlite3_shell_lib STATIC ${SQLITE3_SRC_DIR}/shell.c)
+    target_include_directories(sqlite3_shell_lib PUBLIC ${SQLITE3_SRC_DIR})
+    target_compile_definitions(sqlite3_shell_lib PRIVATE
+        main=sqlite3_shell_main
+        SQLITE_ENABLE_COLUMN_METADATA=1
+    )
+
+    # Optional readline support for line editing
+    find_library(READLINE_LIB readline)
+    if(NOT READLINE_LIB)
+        target_compile_definitions(sqlite3_shell_lib PRIVATE HAVE_READLINE=0)
+    endif()
+
+    target_compile_options(sqlite3_shell_lib PRIVATE
+        -Wno-unused-parameter
+        -Wno-unused-function
+        -Wno-sign-compare
+    )
+    target_link_libraries(sqlite3_shell_lib PUBLIC sqlite3_lib)
+
+    add_executable(oro_shell
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_shell.cpp
+    )
+    target_link_libraries(oro_shell PRIVATE oro_sqlite_vtab sqlite3_shell_lib)
+    if(READLINE_LIB)
+        target_link_libraries(oro_shell PRIVATE readline)
+    endif()
+    target_include_directories(oro_shell PRIVATE
+        ${SQLITE_VTAB_INCLUDE_DIRS}
+        ${MOT_INCLUDE_DIRS}
+    )
+    target_compile_options(oro_shell PRIVATE
+        -Wno-unused-parameter
+        -fpermissive
+    )
+    add_custom_command(TARGET oro_shell POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            $<TARGET_FILE_DIR:oro_shell>/mot.conf
+    )
+endif()
+
 message(STATUS "")
 message(STATUS "=== oro-db configuration ===")
 message(STATUS "  Build type:    ${CMAKE_BUILD_TYPE}")
@@ -209,6 +351,7 @@ message(STATUS "  Masstree:      ${ORO_HAS_MASSTREE}")
 message(STATUS "  NUMA support:  ${ORO_WITH_NUMA}")
 message(STATUS "  Benchmark:     ${ORO_BUILD_BENCH}")
 message(STATUS "  Tests:         ${ORO_BUILD_TESTS}")
+message(STATUS "  SQLite vtab:   ${ORO_BUILD_SQLITE}")
 message(STATUS "  Memory debug:  ${ORO_MEMORY_DEBUG}")
 message(STATUS "============================")
 message(STATUS "")
