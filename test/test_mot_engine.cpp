@@ -287,6 +287,32 @@ static void TestTransactionCommit() {
     TEST_ASSERT(r.rows[0][0] == "2", "2 rows after autocommit");
 }
 
+static void TestExplicitRollback() {
+    SetupDb();
+    auto r = ExecSql(g_db,
+        "CREATE MOT TABLE t_rb (id INTEGER PRIMARY KEY, val INTEGER)");
+    TEST_ASSERT(r.rc == SQLITE_OK, "create");
+
+    ExecSql(g_db, "INSERT INTO t_rb VALUES(1, 100)");
+
+    // Explicit BEGIN..ROLLBACK should not persist changes
+    ExecSql(g_db, "BEGIN");
+    ExecSql(g_db, "INSERT INTO t_rb VALUES(2, 200)");
+    ExecSql(g_db, "INSERT INTO t_rb VALUES(3, 300)");
+    ExecSql(g_db, "ROLLBACK");
+
+    r = ExecSql(g_db, "SELECT count(*) FROM t_rb");
+    TEST_ASSERT(r.rows[0][0] == "1", "1 row after rollback");
+
+    // Explicit BEGIN..COMMIT should persist
+    ExecSql(g_db, "BEGIN");
+    ExecSql(g_db, "INSERT INTO t_rb VALUES(4, 400)");
+    ExecSql(g_db, "COMMIT");
+
+    r = ExecSql(g_db, "SELECT count(*) FROM t_rb");
+    TEST_ASSERT(r.rows[0][0] == "2", "2 rows after commit");
+}
+
 // --- Data types ---
 
 static void TestDataTypes() {
@@ -405,6 +431,7 @@ int main(int argc, char* argv[]) {
 
     printf("\n[Part 3] Transactions and types\n");
     RUN_TEST(TestTransactionCommit);
+    RUN_TEST(TestExplicitRollback);
     RUN_TEST(TestDataTypes);
 
     // Cleanup
