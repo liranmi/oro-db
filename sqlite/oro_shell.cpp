@@ -20,6 +20,7 @@
 
 #include "sqlite3.h"
 #include "oro_sqlite.h"
+#include "oro_mot_adapter.h"
 
 // Auto-extension callback: called for every new sqlite3 connection.
 // Registers the "oro" vtab module automatically.
@@ -67,16 +68,25 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Initialize MOT engine
+    // Initialize MOT engine (vtab path — creates MOTEngine singleton)
     int rc = oro_engine_init(mot_config);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "oro_shell: failed to initialize MOT engine\n");
+        fprintf(stderr, "oro_shell: failed to initialize MOT engine (vtab path)\n");
         if (mot_config)
             fprintf(stderr, "  config: %s\n", mot_config);
         return 1;
     }
 
-    // Register auto-extension so every new connection gets the "oro" module
+    // Initialize MOT adapter (engine path — for CREATE MOT TABLE).
+    // MOTEngine::CreateInstance is idempotent, so this just flips the adapter's
+    // "initialized" flag and sets its g_engine pointer.
+    if (oroMotInit(mot_config) != 0) {
+        fprintf(stderr, "oro_shell: failed to initialize MOT adapter\n");
+        oro_engine_shutdown();
+        return 1;
+    }
+
+    // Register auto-extension so every new connection gets the "oro" vtab module
     rc = sqlite3_auto_extension((void(*)(void))oro_auto_extension);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "oro_shell: failed to register auto-extension\n");
@@ -86,12 +96,14 @@ int main(int argc, char* argv[])
 
     // Print a banner
     fprintf(stderr, "oro-db shell (SQLite + in-memory MOT engine)\n");
-    fprintf(stderr, "Use: CREATE VIRTUAL TABLE t USING oro(col1 TYPE, ...);\n\n");
+    fprintf(stderr, "Native: CREATE MOT TABLE t (col1 TYPE, ...);\n");
+    fprintf(stderr, "Legacy: CREATE VIRTUAL TABLE t USING oro(col1 TYPE, ...);\n\n");
 
     // Delegate to the SQLite shell
     rc = sqlite3_shell_main(shell_argc, shell_argv);
 
     // Cleanup
+    oroMotShutdown();
     oro_engine_shutdown();
     return rc;
 }

@@ -67,6 +67,14 @@ int oroMotBegin(void* pDb);
 int oroMotCommit(void* pDb);
 int oroMotRollback(void* pDb);
 
+/* Auto-commit helper: if the connection has an active transaction that was
+ * auto-started by cursor operations, commit it. No-op if no active txn.
+ * Called by VDBE halt when SQLite's db->autoCommit is set. */
+int oroMotAutoCommit(void* pDb);
+
+/* Returns 1 if the connection has an active transaction. */
+int oroMotHasActiveTxn(void* pDb);
+
 /* ============================================================
  * Cursor operations (called from VDBE opcode handlers)
  * ============================================================ */

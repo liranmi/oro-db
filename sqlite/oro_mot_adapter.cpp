@@ -255,6 +255,32 @@ extern "C" int oroMotRollback(void* pDb) {
     return 0;
 }
 
+extern "C" int oroMotAutoCommit(void* pDb) {
+    // Same as oroMotCommit but safely no-ops if no connection or no active txn.
+    auto& g = globals();
+    OroMotConn* c;
+    {
+        std::lock_guard<std::mutex> lock(g.mu);
+        auto it = g.conns.find(pDb);
+        if (it == g.conns.end()) return 0;
+        c = it->second;
+    }
+    if (!c->in_txn) return 0;
+    EnsureThreadCtx(c);
+    RC rc = c->txn->Commit();
+    c->txn->EndTransaction();
+    c->in_txn = false;
+    return (rc == RC_OK) ? 0 : 1;
+}
+
+extern "C" int oroMotHasActiveTxn(void* pDb) {
+    auto& g = globals();
+    std::lock_guard<std::mutex> lock(g.mu);
+    auto it = g.conns.find(pDb);
+    if (it == g.conns.end()) return 0;
+    return it->second->in_txn ? 1 : 0;
+}
+
 // =====================================================================
 // Table registry
 // =====================================================================
@@ -439,9 +465,11 @@ static void CursorAdvance(OroMotCursor* cur) {
             }
             if (r) {
                 cur->current_row = r;
-                uint64_t rid;
-                r->GetValue(MOT_COL_ROWID, rid);
-                cur->current_rowid = (int64_t)rid;
+                // Rowid column stores htobe64(rowid) (set via SetInternalKey for the index).
+                // Convert back to native endian for the SQLite rowid.
+                uint64_t rid_be;
+                r->GetValue(MOT_COL_ROWID, rid_be);
+                cur->current_rowid = (int64_t)be64toh(rid_be);
                 cur->at_eof = false;
                 return;
             }
@@ -571,13 +599,15 @@ extern "C" int oroMotInsert(OroMotCursor* pCur, int64_t rowid,
     if (!row) return 1;
 
     // Pack: [4-byte size][record bytes...]
-    // We use a fixed-size BLOB column and pack the actual size as a length prefix.
-    uint8_t buf[MAX_RECORD_SIZE];
+    // Use SetStringValue (friend helper) to write to the column at the correct
+    // offset. SetValueVariable has a known bug in MOT (writes at fieldSize
+    // instead of field offset) so we avoid it.
+    char buf[MAX_RECORD_SIZE];
     memset(buf, 0, sizeof(buf));
     uint32_t sz = (uint32_t)nData;
     memcpy(buf, &sz, sizeof(uint32_t));
     memcpy(buf + sizeof(uint32_t), pData, nData);
-    row->SetValueVariable(MOT_COL_DATA, buf, MAX_RECORD_SIZE);
+    SetStringValue(row, MOT_COL_DATA, buf);
 
     // Set rowid column AND InternalKey (with htobe64 for MassTree byte ordering)
     row->SetValue<uint64_t>(MOT_COL_ROWID, (uint64_t)rowid);

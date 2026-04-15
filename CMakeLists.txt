@@ -325,7 +325,7 @@ if(ORO_BUILD_SQLITE)
     add_executable(oro_shell
         ${CMAKE_SOURCE_DIR}/sqlite/oro_shell.cpp
     )
-    target_link_libraries(oro_shell PRIVATE oro_sqlite_vtab sqlite3_shell_lib)
+    target_link_libraries(oro_shell PRIVATE oro_sqlite_vtab oro_mot_adapter sqlite3_shell_lib)
     if(READLINE_LIB)
         target_link_libraries(oro_shell PRIVATE readline)
     endif()
