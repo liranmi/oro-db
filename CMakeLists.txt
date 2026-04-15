@@ -244,47 +244,6 @@ if(ORO_BUILD_SQLITE)
     # Make sqlite3_lib link against the adapter (forward declarations resolve here)
     target_link_libraries(sqlite3_lib PUBLIC oro_mot_adapter)
 
-    set(SQLITE_VTAB_INCLUDE_DIRS
-        ${CMAKE_SOURCE_DIR}/sqlite
-        ${CMAKE_SOURCE_DIR}/src/stubs
-        ${CMAKE_SOURCE_DIR}/bench/framework
-    )
-
-    add_library(oro_sqlite_vtab STATIC
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_vtab.cpp
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_bestindex.cpp
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_sqlite_update.cpp
-    )
-    target_link_libraries(oro_sqlite_vtab PUBLIC oro sqlite3_lib)
-    target_include_directories(oro_sqlite_vtab PRIVATE
-        ${SQLITE_VTAB_INCLUDE_DIRS}
-        ${MOT_INCLUDE_DIRS}
-    )
-    target_compile_options(oro_sqlite_vtab PRIVATE
-        -Wno-unused-parameter
-        -fpermissive
-    )
-
-    # Test executable (virtual table path)
-    add_executable(oro_test_sqlite
-        ${CMAKE_SOURCE_DIR}/test/test_sqlite.cpp
-    )
-    target_link_libraries(oro_test_sqlite PRIVATE oro_sqlite_vtab)
-    target_include_directories(oro_test_sqlite PRIVATE
-        ${SQLITE_VTAB_INCLUDE_DIRS}
-        ${MOT_INCLUDE_DIRS}
-    )
-    target_compile_options(oro_test_sqlite PRIVATE
-        -Wno-unused-parameter
-        -fpermissive
-    )
-    # Copy mot.conf next to the test binary
-    add_custom_command(TARGET oro_test_sqlite POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/config/mot.conf
-            $<TARGET_FILE_DIR:oro_test_sqlite>/mot.conf
-    )
-
     # Test executable (CREATE MOT TABLE / engine integration path)
     add_executable(oro_test_mot_engine
         ${CMAKE_SOURCE_DIR}/test/test_mot_engine.cpp
@@ -325,12 +284,13 @@ if(ORO_BUILD_SQLITE)
     add_executable(oro_shell
         ${CMAKE_SOURCE_DIR}/sqlite/oro_shell.cpp
     )
-    target_link_libraries(oro_shell PRIVATE oro_sqlite_vtab oro_mot_adapter sqlite3_shell_lib)
+    target_link_libraries(oro_shell PRIVATE oro_mot_adapter sqlite3_shell_lib)
     if(READLINE_LIB)
         target_link_libraries(oro_shell PRIVATE readline)
     endif()
     target_include_directories(oro_shell PRIVATE
-        ${SQLITE_VTAB_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/sqlite
+        ${SQLITE3_SRC_DIR}
         ${MOT_INCLUDE_DIRS}
     )
     target_compile_options(oro_shell PRIVATE
