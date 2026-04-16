@@ -137,6 +137,85 @@ int oroMotCount(OroMotCursor* pCur, int64_t* pCount);
 /* Returns 1 if the cursor is positioned past EOF, 0 otherwise. */
 int oroMotEof(OroMotCursor* pCur);
 
+/* ============================================================
+ * Rowid allocation
+ * ============================================================ */
+
+/* Get the next unique rowid for a MOT table via cursor.
+ * Uses a per-table atomic counter seeded from max(rowid). */
+int oroMotCursorNewRowid(OroMotCursor* pCur, int64_t* pRowid);
+
+/* ============================================================
+ * Secondary index support
+ * ============================================================ */
+
+/* Create a secondary MOT index for (iDb, table_name, index_name).
+ * Returns 0 on success. */
+int oroMotIndexCreate(void* pDb, int iDb, const char* table_name,
+                      const char* index_name);
+
+/* Drop a secondary index. Returns 0 on success. */
+int oroMotIndexDrop(int iDb, const char* table_name, const char* index_name);
+
+/* Open a cursor on a secondary index. The cursor is marked as an index
+ * cursor (is_index=true). */
+int oroMotIdxCursorOpen(void* pDb, int iDb, const char* table_name,
+                        const char* index_name, int wrFlag,
+                        OroMotCursor** ppCursor);
+
+/* Insert an index entry. pEncodedKey is a memcmp-comparable encoded key
+ * of exactly ORO_MOT_IDX_KEY_LEN bytes. pRecord/nRecord are the original
+ * SQLite index record bytes (for OP_Column on covering index scans). */
+int oroMotIdxInsert(OroMotCursor* pCur,
+                    const void* pEncodedKey, int64_t rowid,
+                    const void* pRecord, int nRecord);
+
+/* Delete an index entry by its encoded key. */
+int oroMotIdxDelete(OroMotCursor* pCur,
+                    const void* pEncodedKey);
+
+/* Get the rowid of the current index entry. */
+int oroMotIdxRowid(OroMotCursor* pCur, int64_t* pRowid);
+
+/* Get the original SQLite index record data from the current entry
+ * (for OP_Column on index cursors). */
+const void* oroMotIdxRecordFetch(OroMotCursor* pCur, unsigned int* pAmt);
+
+/* Seek the index cursor. pEncodedKey is a memcmp-comparable prefix.
+ * cmp_op: 0=GT, 1=GE, 2=LT, 3=LE.
+ * *pRes: 0=exact match found, <0 or >0 for direction of closest match.
+ * *pEof=1 if no matching entry exists. */
+int oroMotIdxSeek(OroMotCursor* pCur,
+                  const void* pEncodedKey, int nKey,
+                  int cmp_op, int* pEof);
+
+/* Encoded key size (constant). */
+#define ORO_MOT_IDX_KEY_LEN 252
+
+/* ============================================================
+ * Key encoding helpers (used by sqlite3.c VDBE dispatch)
+ *
+ * These re-encode SQLite values into a memcmp-comparable byte format:
+ *   NULL  → 0x00
+ *   INT   → 0x02 + 8-byte big-endian unsigned (offset by INT64_MIN)
+ *   REAL  → 0x03 + 8-byte sortable IEEE 754
+ *   TEXT  → 0x04 + raw bytes + 0x00
+ *   BLOB  → 0x05 + raw bytes + 0x00
+ * The output is zero-padded to ORO_MOT_IDX_KEY_LEN.
+ * ============================================================ */
+
+/* Encode a SQLite index record (the blob from OP_MakeRecord/OP_IdxInsert)
+ * into a memcmp-comparable key. Also extracts the rowid (last field).
+ * pOut must be ORO_MOT_IDX_KEY_LEN bytes.
+ * Returns 0 on success. */
+int oroMotEncodeIdxRecord(const void* pRecord, int nRecord,
+                          void* pOut, int64_t* pRowid);
+
+/* Encode nField Mem values (from OP_SeekGE etc.) into a memcmp-comparable
+ * key prefix. pOut must be ORO_MOT_IDX_KEY_LEN bytes. */
+int oroMotEncodeMemValues(const void* pMem, int nField,
+                          void* pOut, int* pOutLen);
+
 #ifdef __cplusplus
 }
 #endif

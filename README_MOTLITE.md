@@ -69,9 +69,9 @@ COMMIT;  -- or ROLLBACK;
 | Data types: INTEGER, REAL, TEXT, BLOB | Yes | Yes |
 | Schema persistence (survives DB reopen) | Yes (schema only) | Yes (with data) |
 | WAL / journal | No | Yes |
-| CREATE INDEX | No (yet) | Yes |
-| Triggers | No (yet) | Yes |
-| Foreign keys | No (yet) | Yes |
+| CREATE INDEX | Yes | Yes |
+| Triggers | Yes | Yes |
+| Foreign keys | Yes | Yes |
 
 ## How it works
 
@@ -135,19 +135,19 @@ back via `oroMotPayloadFetch`.
    is preserved (MOT tables come back empty on reopen). Activating MOT's
    own redo-log infrastructure is a future task.
 
-2. **No CREATE INDEX / triggers / FK** on MOT tables yet. The VDBE layer
-   would handle them (they're above the cursor layer), but we haven't
-   wired `OP_IdxInsert`/`OP_IdxDelete` for MOT cursors.
-
-3. **Read-your-own-writes during transaction**: Within a `BEGIN..COMMIT`,
+2. **Read-your-own-writes during transaction**: Within a `BEGIN..COMMIT`,
    `SELECT` on a MOT table does not yet see the current transaction's
-   uncommitted INSERTs. MOT's OCC defers writes to the index until commit,
-   and our iterator reads the index only. A proper implementation must
-   traverse the transaction's access set alongside the index.
+   uncommitted INSERTs. MOT inserts rows into the MassTree index
+   immediately but the iterator sentinel lookup doesn't match the txn's
+   access set entry. Autocommit (the default) is unaffected.
 
-4. **Rowid allocation is naive**: For INSERTs without explicit rowid,
-   `OP_NewRowid` returns `count(rows) + 1`. This is fine when rowids are
-   dense but can produce collisions after deletes.
+3. **CREATE INDEX on populated tables**: `CREATE INDEX` must be issued
+   before data is inserted. Indexes created after rows exist will be
+   empty until new rows are inserted (no backfill).
+
+4. **Secondary index key encoding**: Index keys use a memcmp-comparable
+   encoding (integers, text with BINARY collation, blobs). NOCASE and
+   other custom collations may not sort correctly through the index.
 
 5. **Concurrent connections**: Each `sqlite3*` handle gets its own MOT
    session. Cross-connection MOT transactions are serialized by MOT's OCC.
@@ -171,7 +171,7 @@ oro-db/
 |       `-- shell.c            # Unmodified
 |-- test/
 |   |-- test_index.cpp         # MOT core tests (18)
-|   `-- test_mot_engine.cpp    # CREATE MOT TABLE integration tests (11)
+|   `-- test_mot_engine.cpp    # CREATE MOT TABLE integration tests (17)
 `-- bench/                     # Direct-API TPC-C and YCSB benchmarks
 ```
 
@@ -186,7 +186,7 @@ oro-db/
 
 ```
 oro_test_index       : 18 passed, 0 failed    MOT engine core
-oro_test_mot_engine  : 11 passed, 0 failed    CREATE MOT TABLE integration
+oro_test_mot_engine  : 17 passed, 0 failed    CREATE MOT TABLE integration
 TPC-C direct API     : 0 aborts               unchanged
 ```
 
@@ -194,9 +194,8 @@ TPC-C direct API     : 0 aborts               unchanged
 
 Roadmap in rough priority order:
 
-1. `CREATE INDEX` on MOT tables (secondary MassTree indexes via `OP_IdxInsert/Delete`).
-2. Read-your-own-writes during transaction (access-set traversal in MOT iterator).
-3. Durability via MOT's redo log (implement `ILogger` file endpoint).
-4. Triggers and foreign keys (expected to work with minimal additional dispatch).
-5. Secondary indexes used by SQLite's query planner for WHERE clauses.
-6. Refactor out of the `sql-lite` branch into a separate `motlite` repo.
+1. Read-your-own-writes during transaction (sentinel identity mismatch in MOT's access set).
+2. Durability via MOT's redo log (implement `ILogger` file endpoint).
+3. Secondary indexes used by SQLite's query planner for WHERE clauses.
+4. `CREATE INDEX` backfill for populated tables.
+5. Refactor out of the `sql-lite` branch into a separate `motlite` repo.
