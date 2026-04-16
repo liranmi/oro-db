@@ -23,7 +23,7 @@ option(ORO_MEMORY_DEBUG "Enable memory debug instrumentation (canaries, bounds c
 # Masstree
 # =============================================================================
 # Check for patched masstree in third_party/masstree
-set(MASSTREE_SRC_DIR "${CMAKE_SOURCE_DIR}/third_party/masstree")
+set(MASSTREE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/masstree")
 if(EXISTS "${MASSTREE_SRC_DIR}/masstree_config.h")
     message(STATUS "Using patched masstree from: ${MASSTREE_SRC_DIR}")
     set(ORO_HAS_MASSTREE ON)
@@ -37,7 +37,7 @@ endif()
 # Stubs (replace openGauss kernel headers)
 # =============================================================================
 # Stubs dir must come first so our postgres.h etc. override system/openGauss headers
-include_directories(BEFORE ${CMAKE_SOURCE_DIR}/src/stubs)
+include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs)
 # Masstree include must come before MOT core so masstree_config.h resolves to our stub bridge
 if(ORO_HAS_MASSTREE)
     include_directories(BEFORE ${MASSTREE_SRC_DIR})
@@ -46,7 +46,7 @@ endif()
 # =============================================================================
 # MOT Core source collection
 # =============================================================================
-set(MOT_CORE_DIR ${CMAKE_SOURCE_DIR}/src/mot_core)
+set(MOT_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/mot_core)
 
 # Include ALL subdirectories of MOT core
 file(GLOB_RECURSE MOT_ALL_DIRS LIST_DIRECTORIES true ${MOT_CORE_DIR}/*)
@@ -78,10 +78,10 @@ endif()
 
 # Stubs source (openGauss kernel replacements)
 set(STUB_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/stubs/oro_stubs.cpp
-    ${CMAKE_SOURCE_DIR}/src/stubs/oro_index_factory.cpp
-    ${CMAKE_SOURCE_DIR}/src/stubs/oro_recovery_stub.cpp
-    ${CMAKE_SOURCE_DIR}/src/stubs/oro_masstree_adapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/oro_stubs.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/oro_index_factory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/oro_recovery_stub.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/oro_masstree_adapter.cpp
 )
 
 # Masstree source files (openEuler patched masstree)
@@ -142,11 +142,11 @@ endif()
 # =============================================================================
 if(ORO_BUILD_BENCH)
     add_executable(oro_micro_bench
-        ${CMAKE_SOURCE_DIR}/bench/oro_bench.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/oro_bench.cpp
     )
     target_link_libraries(oro_micro_bench PRIVATE oro)
     target_include_directories(oro_micro_bench PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
         ${MOT_INCLUDE_DIRS}
     )
 
@@ -154,22 +154,22 @@ if(ORO_BUILD_BENCH)
     # TPC-C / YCSB benchmark executable
     # =========================================================================
     set(BENCH_INCLUDE_DIRS
-        ${CMAKE_SOURCE_DIR}/bench/framework
-        ${CMAKE_SOURCE_DIR}/bench/tpcc
-        ${CMAKE_SOURCE_DIR}/bench/ycsb
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/framework
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/tpcc
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/ycsb
     )
 
     add_executable(oro_bench
-        ${CMAKE_SOURCE_DIR}/bench/main.cpp
-        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_workload.cpp
-        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_txn.cpp
-        ${CMAKE_SOURCE_DIR}/bench/tpcc/tpcc_consistency.cpp
-        ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_workload.cpp
-        ${CMAKE_SOURCE_DIR}/bench/ycsb/ycsb_txn.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/tpcc/tpcc_workload.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/tpcc/tpcc_txn.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/tpcc/tpcc_consistency.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/ycsb/ycsb_workload.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/ycsb/ycsb_txn.cpp
     )
     target_link_libraries(oro_bench PRIVATE oro)
     target_include_directories(oro_bench PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
         ${MOT_INCLUDE_DIRS}
         ${BENCH_INCLUDE_DIRS}
     )
@@ -181,7 +181,7 @@ if(ORO_BUILD_BENCH)
     # Copy mot.conf next to the binary so it is found automatically
     add_custom_command(TARGET oro_bench POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            ${CMAKE_CURRENT_SOURCE_DIR}/config/mot.conf
             $<TARGET_FILE_DIR:oro_bench>/mot.conf
     )
 endif()
@@ -193,11 +193,11 @@ option(ORO_BUILD_TESTS "Build the index test suite" ON)
 
 if(ORO_BUILD_TESTS)
     add_executable(oro_test_index
-        ${CMAKE_SOURCE_DIR}/test/test_index.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/test_index.cpp
     )
     target_link_libraries(oro_test_index PRIVATE oro)
     target_include_directories(oro_test_index PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/stubs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
         ${MOT_INCLUDE_DIRS}
     )
 endif()
@@ -209,7 +209,7 @@ option(ORO_BUILD_SQLITE "Build SQLite virtual table interface" OFF)
 
 if(ORO_BUILD_SQLITE)
     # Bundled SQLite amalgamation in third_party/sqlite
-    set(SQLITE3_SRC_DIR "${CMAKE_SOURCE_DIR}/third_party/sqlite")
+    set(SQLITE3_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
     if(NOT EXISTS "${SQLITE3_SRC_DIR}/sqlite3.h")
         message(FATAL_ERROR "SQLite amalgamation not found at ${SQLITE3_SRC_DIR}\n"
                 "Download from https://www.sqlite.org/download.html and extract into third_party/sqlite/")
@@ -226,13 +226,13 @@ if(ORO_BUILD_SQLITE)
     # MOT adapter: separate library with C linkage that sqlite3_lib will call into.
     # Built before oro_sqlite_vtab so it can be linked between sqlite3_lib and the executable.
     add_library(oro_mot_adapter STATIC
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_mot_adapter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite/oro_mot_adapter.cpp
     )
     target_link_libraries(oro_mot_adapter PUBLIC oro)
     target_include_directories(oro_mot_adapter PUBLIC
-        ${CMAKE_SOURCE_DIR}/sqlite
-        ${CMAKE_SOURCE_DIR}/src/stubs
-        ${CMAKE_SOURCE_DIR}/bench/framework
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
+        ${CMAKE_CURRENT_SOURCE_DIR}/bench/framework
         ${MOT_INCLUDE_DIRS}
         ${SQLITE3_SRC_DIR}
     )
@@ -246,16 +246,16 @@ if(ORO_BUILD_SQLITE)
 
     # Test executable (CREATE MOT TABLE / engine integration path)
     add_executable(oro_test_mot_engine
-        ${CMAKE_SOURCE_DIR}/test/test_mot_engine.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/test_mot_engine.cpp
     )
     target_link_libraries(oro_test_mot_engine PRIVATE oro_mot_adapter sqlite3_lib)
     target_include_directories(oro_test_mot_engine PRIVATE
-        ${CMAKE_SOURCE_DIR}/sqlite
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
         ${SQLITE3_SRC_DIR}
     )
     add_custom_command(TARGET oro_test_mot_engine POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            ${CMAKE_CURRENT_SOURCE_DIR}/config/mot.conf
             $<TARGET_FILE_DIR:oro_test_mot_engine>/mot.conf
     )
 
@@ -282,16 +282,16 @@ if(ORO_BUILD_SQLITE)
             HAVE_LINENOISE=2
         )
         target_include_directories(sqlite3_shell_lib PRIVATE
-            ${CMAKE_SOURCE_DIR}/third_party/linenoise
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/linenoise
         )
         # Compile linenoise (msteveb fork) as a static library
         add_library(linenoise_lib STATIC
-            ${CMAKE_SOURCE_DIR}/third_party/linenoise/linenoise.c
-            ${CMAKE_SOURCE_DIR}/third_party/linenoise/stringbuf.c
-            ${CMAKE_SOURCE_DIR}/third_party/linenoise/utf8.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/linenoise/linenoise.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/linenoise/stringbuf.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/linenoise/utf8.c
         )
         target_include_directories(linenoise_lib PRIVATE
-            ${CMAKE_SOURCE_DIR}/third_party/linenoise
+            ${CMAKE_CURRENT_SOURCE_DIR}/third_party/linenoise
         )
         target_compile_options(linenoise_lib PRIVATE -Wno-all)
     endif()
@@ -304,7 +304,7 @@ if(ORO_BUILD_SQLITE)
     target_link_libraries(sqlite3_shell_lib PUBLIC sqlite3_lib)
 
     add_executable(oro_shell
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_shell.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite/oro_shell.cpp
     )
     target_link_libraries(oro_shell PRIVATE oro_mot_adapter sqlite3_shell_lib)
     if(READLINE_LIB AND READLINE_INCLUDE_DIR)
@@ -313,7 +313,7 @@ if(ORO_BUILD_SQLITE)
         target_link_libraries(oro_shell PRIVATE linenoise_lib)
     endif()
     target_include_directories(oro_shell PRIVATE
-        ${CMAKE_SOURCE_DIR}/sqlite
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
         ${SQLITE3_SRC_DIR}
         ${MOT_INCLUDE_DIRS}
     )
@@ -323,17 +323,17 @@ if(ORO_BUILD_SQLITE)
     )
     add_custom_command(TARGET oro_shell POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            ${CMAKE_CURRENT_SOURCE_DIR}/config/mot.conf
             $<TARGET_FILE_DIR:oro_shell>/mot.conf
     )
 
     # PG wire protocol server: oro_server
     add_executable(oro_server
-        ${CMAKE_SOURCE_DIR}/sqlite/oro_server.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite/oro_server.cpp
     )
     target_link_libraries(oro_server PRIVATE oro_mot_adapter sqlite3_lib pthread)
     target_include_directories(oro_server PRIVATE
-        ${CMAKE_SOURCE_DIR}/sqlite
+        ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
         ${SQLITE3_SRC_DIR}
         ${MOT_INCLUDE_DIRS}
     )
@@ -343,7 +343,7 @@ if(ORO_BUILD_SQLITE)
     )
     add_custom_command(TARGET oro_server POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            ${CMAKE_CURRENT_SOURCE_DIR}/config/mot.conf
             $<TARGET_FILE_DIR:oro_server>/mot.conf
     )
 endif()
