@@ -127,6 +127,16 @@ target_compile_options(oro PRIVATE
     -fpermissive
 )
 
+target_include_directories(oro PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/knl
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs/utils
+    ${MOT_INCLUDE_DIRS}
+)
+if(ORO_HAS_MASSTREE)
+    target_include_directories(oro PUBLIC ${MASSTREE_SRC_DIR})
+endif()
+
 target_link_libraries(oro PUBLIC
     pthread
     atomic
