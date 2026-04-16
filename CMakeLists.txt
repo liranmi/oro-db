@@ -326,6 +326,26 @@ if(ORO_BUILD_SQLITE)
             ${CMAKE_SOURCE_DIR}/config/mot.conf
             $<TARGET_FILE_DIR:oro_shell>/mot.conf
     )
+
+    # PG wire protocol server: oro_server
+    add_executable(oro_server
+        ${CMAKE_SOURCE_DIR}/sqlite/oro_server.cpp
+    )
+    target_link_libraries(oro_server PRIVATE oro_mot_adapter sqlite3_lib pthread)
+    target_include_directories(oro_server PRIVATE
+        ${CMAKE_SOURCE_DIR}/sqlite
+        ${SQLITE3_SRC_DIR}
+        ${MOT_INCLUDE_DIRS}
+    )
+    target_compile_options(oro_server PRIVATE
+        -Wno-unused-parameter
+        -fpermissive
+    )
+    add_custom_command(TARGET oro_server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/config/mot.conf
+            $<TARGET_FILE_DIR:oro_server>/mot.conf
+    )
 endif()
 
 message(STATUS "")

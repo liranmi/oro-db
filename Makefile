@@ -29,7 +29,7 @@ release-all:
 
 sqlite:
 	@cmake -S . -B $(BUILD_DIR_DEBUG) -DCMAKE_BUILD_TYPE=Debug -DORO_BUILD_SQLITE=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null
-	$(MAKE) -C $(BUILD_DIR_DEBUG) -j$(NPROC) oro_test_mot_engine oro_shell
+	$(MAKE) -C $(BUILD_DIR_DEBUG) -j$(NPROC) oro_test_mot_engine oro_shell oro_server
 
 clean:
 	rm -rf build
