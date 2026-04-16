@@ -268,10 +268,32 @@ if(ORO_BUILD_SQLITE)
         SQLITE_ENABLE_COLUMN_METADATA=1
     )
 
-    # Optional readline support for line editing
+    # Line editing: prefer readline if both library and headers are available,
+    # otherwise fall back to bundled linenoise (msteveb fork).
     find_library(READLINE_LIB readline)
-    if(NOT READLINE_LIB)
-        target_compile_definitions(sqlite3_shell_lib PRIVATE HAVE_READLINE=0)
+    find_path(READLINE_INCLUDE_DIR readline/readline.h)
+    if(READLINE_LIB AND READLINE_INCLUDE_DIR)
+        message(STATUS "  Line editing: readline")
+        target_compile_definitions(sqlite3_shell_lib PRIVATE HAVE_READLINE=1)
+    else()
+        message(STATUS "  Line editing: linenoise (bundled)")
+        target_compile_definitions(sqlite3_shell_lib PRIVATE
+            HAVE_READLINE=0
+            HAVE_LINENOISE=2
+        )
+        target_include_directories(sqlite3_shell_lib PRIVATE
+            ${CMAKE_SOURCE_DIR}/third_party/linenoise
+        )
+        # Compile linenoise (msteveb fork) as a static library
+        add_library(linenoise_lib STATIC
+            ${CMAKE_SOURCE_DIR}/third_party/linenoise/linenoise.c
+            ${CMAKE_SOURCE_DIR}/third_party/linenoise/stringbuf.c
+            ${CMAKE_SOURCE_DIR}/third_party/linenoise/utf8.c
+        )
+        target_include_directories(linenoise_lib PRIVATE
+            ${CMAKE_SOURCE_DIR}/third_party/linenoise
+        )
+        target_compile_options(linenoise_lib PRIVATE -Wno-all)
     endif()
 
     target_compile_options(sqlite3_shell_lib PRIVATE
@@ -285,8 +307,10 @@ if(ORO_BUILD_SQLITE)
         ${CMAKE_SOURCE_DIR}/sqlite/oro_shell.cpp
     )
     target_link_libraries(oro_shell PRIVATE oro_mot_adapter sqlite3_shell_lib)
-    if(READLINE_LIB)
+    if(READLINE_LIB AND READLINE_INCLUDE_DIR)
         target_link_libraries(oro_shell PRIVATE readline)
+    else()
+        target_link_libraries(oro_shell PRIVATE linenoise_lib)
     endif()
     target_include_directories(oro_shell PRIVATE
         ${CMAKE_SOURCE_DIR}/sqlite
