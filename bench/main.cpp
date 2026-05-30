@@ -62,6 +62,8 @@ static void PrintUsage(const char* prog)
     printf("  -M                   Full TPC-C mix (default): 45%% NewOrder, 43%% Payment, etc.\n");
     printf("  -Tp N                NewOrder/Payment only: N%% NewOrder, (100-N)%% Payment\n");
     printf("  --consistency-pct N  Mix N%% consistency checks into txn workload (0-100)\n");
+    printf("  --coro-batch         StockLevel: coroutine-interleaved batched STOCK lookups\n");
+    printf("  --stocklevel-only    TPC-C mix = 100%% StockLevel (for A/B testing lookups)\n");
     printf("  --mvcc-test          MVCC test: 5%% consistency checks on thread 0 only\n");
     printf("\nYCSB options:\n");
     printf("  --profile A|B|C|D|E|F   Workload profile (default: A)\n");
@@ -175,6 +177,12 @@ static bool ParseConfig(int argc, char* argv[], oro::BenchConfig& cfg)
             cfg.ycsb_ops_per_txn = (uint32_t)atoi(argv[++i]);
         } else if (MatchArg(argv[i], "--scan-length") && i + 1 < argc) {
             cfg.ycsb_scan_length = (uint32_t)atoi(argv[++i]);
+        } else if (MatchArg(argv[i], "--coro-batch")) {
+            cfg.coro_batch = true;
+        } else if (MatchArg(argv[i], "--stocklevel-only")) {
+            cfg.tpcc_new_order_pct = cfg.tpcc_payment_pct = 0;
+            cfg.tpcc_order_status_pct = cfg.tpcc_delivery_pct = 0;
+            cfg.tpcc_stock_level_pct = 1.0;
         } else {
             fprintf(stderr, "Error: unknown argument '%s'\n", argv[i]);
             PrintUsage(argv[0]);
@@ -255,6 +263,8 @@ int main(int argc, char* argv[])
             printf("  MVCC test:  enabled (5%% consistency checks on thread 0)\n");
         if (cfg.tpcc_small_schema)
             printf("  Schema:     small (reduced columns)\n");
+        printf("  StockLevel: %s STOCK lookups\n",
+               cfg.coro_batch ? "coroutine-interleaved batch" : "sequential");
     } else {
         printf("  Profile:    %s\n", ProfileName(cfg.ycsb_profile));
         printf("  Records:    %lu\n", (unsigned long)cfg.ycsb_record_count);
@@ -265,6 +275,8 @@ int main(int argc, char* argv[])
             printf("  Scan len:   %u\n", cfg.ycsb_scan_length);
     }
     printf("\n");
+
+    oro::tpcc::g_tpcc_coro_batch = cfg.coro_batch;
 
     // --- Initialize MOT engine ---
     printf("[1] Initializing MOT engine...\n");

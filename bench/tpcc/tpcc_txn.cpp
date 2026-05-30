@@ -17,7 +17,9 @@
 #include "index_iterator.h"
 #include "sentinel.h"
 #include "key.h"
+#include "masstree_index.h"
 #include <set>
+#include <vector>
 
 #include <cstring>
 #include <ctime>
@@ -26,6 +28,8 @@
 using namespace MOT;
 
 namespace oro::tpcc {
+
+bool g_tpcc_coro_batch = false;
 
 // Lookup helper: build key, point lookup, destroy key
 static Row* Lookup(TxnManager* txn, Table* table, Index* ix,
@@ -635,23 +639,65 @@ RC RunStockLevel(TxnManager* txn, const TpccTables& t, const StockLevelParams& p
         PackOlKey(p.w_id, p.d_id, o_id_low, 0),
         PackOlKey(p.w_id, p.d_id, d_next_o_id - 1, 0),
     OL_SUFFIX_BITS);
-    std::set<uint64_t> low_stock_items;
+
+    // Collect the item ids from the last 20 orders' order-lines first, so the
+    // STOCK point lookups can be resolved as one independent batch.
+    std::vector<uint64_t> item_ids;
     RangeScan scan(txn, t.ix_order_line, lo, hi, AccessType::RD);
     for (Row* row : scan) {
         uint64_t ol_i_id;
         row->GetValue(OL_I_ID, ol_i_id);
+        item_ids.push_back(ol_i_id);
+    }
+    if (scan.rc() != RC_OK) { txn->Rollback(); return scan.rc(); }
 
-        Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, ol_i_id), rc);
-        if (rc != RC_OK) break;
-        if (s_row) {
-            uint64_t s_quantity;
-            s_row->GetValue(STK::S_QUANTITY, s_quantity);
-            if (s_quantity < p.threshold) {
-                low_stock_items.insert(ol_i_id);
+    std::set<uint64_t> low_stock_items;
+    const uint32_t n = (uint32_t)item_ids.size();
+
+    MasstreePrimaryIndex* sidx =
+        g_tpcc_coro_batch ? dynamic_cast<MasstreePrimaryIndex*>(t.ix_stock) : nullptr;
+
+    if (sidx != nullptr && n > 0) {
+        // Coroutine-interleaved path: batch the index descents (the cold,
+        // independent misses), then resolve visibility per sentinel via MVCC.
+        std::vector<Key*> keys(n);
+        std::vector<const Key*> kptrs(n);
+        std::vector<Sentinel*> sents(n, nullptr);
+        for (uint32_t i = 0; i < n; ++i) {
+            keys[i] = BuildSearchKey(txn, t.ix_stock, PackStockKey(p.w_id, item_ids[i]));
+            kptrs[i] = keys[i];
+        }
+        sidx->IndexReadBatchCoro(kptrs.data(), sents.data(), n, txn->GetThdId());
+        for (uint32_t i = 0; i < n; ++i) {
+            if (!sents[i]) continue;
+            Row* s_row = txn->RowLookup(AccessType::RD, sents[i], rc);
+            if (rc != RC_OK) break;
+            if (s_row) {
+                uint64_t s_quantity;
+                s_row->GetValue(STK::S_QUANTITY, s_quantity);
+                if (s_quantity < p.threshold) {
+                    low_stock_items.insert(item_ids[i]);
+                }
+            }
+        }
+        for (uint32_t i = 0; i < n; ++i) {
+            if (keys[i]) txn->DestroyTxnKey(keys[i]);
+        }
+        if (rc != RC_OK) { txn->Rollback(); return rc; }
+    } else {
+        // Sequential baseline: one point lookup at a time.
+        for (uint64_t ol_i_id : item_ids) {
+            Row* s_row = Lookup(txn, t.stock, t.ix_stock, AccessType::RD, PackStockKey(p.w_id, ol_i_id), rc);
+            if (rc != RC_OK) { txn->Rollback(); return rc; }
+            if (s_row) {
+                uint64_t s_quantity;
+                s_row->GetValue(STK::S_QUANTITY, s_quantity);
+                if (s_quantity < p.threshold) {
+                    low_stock_items.insert(ol_i_id);
+                }
             }
         }
     }
-    if (scan.rc() != RC_OK) rc = scan.rc();
 
     rc = txn->Commit();
     txn->EndTransaction();

@@ -58,6 +58,11 @@ struct StockLevelParams {
     uint64_t threshold;
 };
 
+// When true, StockLevel resolves its STOCK point lookups with the
+// coroutine-interleaved batch path instead of one-at-a-time. Toggled via the
+// oro_bench --coro-batch flag; lets us A/B the same workload on identical data.
+extern bool g_tpcc_coro_batch;
+
 // Execute each TPC-C transaction. Returns RC_OK on commit, else abort code.
 MOT::RC RunNewOrder(MOT::TxnManager* txn, const TpccTables& t, const NewOrderParams& p, FastRandom& rng);
 MOT::RC RunPayment(MOT::TxnManager* txn, const TpccTables& t, const PaymentParams& p);

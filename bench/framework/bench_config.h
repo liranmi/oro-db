@@ -48,6 +48,7 @@ struct BenchConfig {
     double   tpcc_stock_level_pct  = 0.04;
     double   tpcc_consistency_pct  = 0.0;   // fraction of txns that run consistency checks (0 = disabled)
     bool     tpcc_mvcc_test        = false;  // MVCC test: 5% consistency checks on thread 0 only
+    bool     coro_batch            = false;  // StockLevel: use coroutine-interleaved batched STOCK lookups
 
     // YCSB
     YcsbProfile  ycsb_profile      = YcsbProfile::A;
