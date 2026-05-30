@@ -548,6 +548,7 @@ RC RunDelivery(TxnManager* txn, const TpccTables& t, const DeliveryParams& p)
             it->Next();
         }
         if (it) it->Destroy();
+        txn->DestroyTxnKey(search_key);  // allocated via BuildSearchKey above
 
         if (!no_row) continue;  // no new-order for this district — skip
         if (rc != RC_OK) { txn->Rollback(); return rc; }
