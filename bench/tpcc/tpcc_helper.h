@@ -148,7 +148,8 @@ inline uint64_t NextHistoryKey() {
 // In the InternalKey path, BuildKey does CpKey with the raw column bytes.
 // So the key is just the native-endian uint64 value, 8 bytes.
 // We fill it directly without creating a temp row.
-// Caller must destroy the returned key via ix->DestroyKey().
+// The key is allocated from the transaction's DummyIndex slab (GetTxnKey),
+// so the caller must release it via txn->DestroyTxnKey(), NOT ix->DestroyKey().
 // ======================================================================
 inline MOT::Key* BuildSearchKey(MOT::TxnManager* txn, MOT::Index* ix, uint64_t packed_key)
 {
@@ -320,6 +321,10 @@ public:
     {
         if (m_cursor) m_cursor->Destroy();
         if (m_end)    m_end->Destroy();
+        // Keys come from BuildSearchKey -> txn->GetTxnKey (DummyIndex slab),
+        // so they must be released via DestroyTxnKey, not ix->DestroyKey.
+        if (m_lo_key) m_txn->DestroyTxnKey(m_lo_key);
+        if (m_hi_key) m_txn->DestroyTxnKey(m_hi_key);
     }
 
     RangeScan(const RangeScan&) = delete;

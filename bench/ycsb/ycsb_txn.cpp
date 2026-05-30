@@ -140,7 +140,16 @@ static RC DoUpdate(TxnManager* txn, const YcsbTables& tables,
     char buf[256];
     uint32_t len = (field_length < sizeof(buf)) ? field_length : (uint32_t)(sizeof(buf) - 1);
     rng.RandomString(buf, len, len);
-    SetStringValue(row, target_field, buf);
+
+    // Flip the access to WR by re-writing the key column with its own value
+    // (type-safe: 8-byte column), then write the field into the MVCC draft.
+    // Writing the original row directly would bypass MVCC entirely.
+    rc = txn->UpdateRow(row, Col::YCSB_KEY, ycsb_key);
+    if (rc != RC_OK) {
+        return rc;
+    }
+    Row* draft = txn->GetLastAccessedDraft();
+    SetStringValue(draft, target_field, buf);
 
     return RC_OK;
 }
@@ -241,7 +250,16 @@ static RC DoReadModifyWrite(TxnManager* txn, const YcsbTables& tables,
     char buf[256];
     uint32_t len = (field_length < sizeof(buf)) ? field_length : (uint32_t)(sizeof(buf) - 1);
     rng.RandomString(buf, len, len);
-    SetStringValue(row, target_field, buf);
+
+    // Flip the access to WR by re-writing the key column with its own value
+    // (type-safe: 8-byte column), then write the field into the MVCC draft.
+    // Writing the original row directly would bypass MVCC entirely.
+    rc = txn->UpdateRow(row, Col::YCSB_KEY, ycsb_key);
+    if (rc != RC_OK) {
+        return rc;
+    }
+    Row* draft = txn->GetLastAccessedDraft();
+    SetStringValue(draft, target_field, buf);
 
     return RC_OK;
 }
