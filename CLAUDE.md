@@ -31,7 +31,9 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo && cmake --build build -j$(npro
 
 ## Build System
 
-**CMake 3.14+** with C++17 and C11. Default build type: `RelWithDebInfo`.
+**CMake 3.14+** with C++20 and C11. Default build type: `RelWithDebInfo`.
+(C++20 is required for the coroutine-interleaved index probe path; the vendored
+MassTree headers were made C++20-clean.)
 
 ### Makefile Targets (convenience wrapper)
 
@@ -288,7 +290,7 @@ txn->DestroyTxnKey(hi_key);
 
 ## Code Conventions
 
-- **Language**: C++17, C11
+- **Language**: C++20, C11
 - **Class names**: CamelCase (`MOTEngine`, `SessionContext`, `OccTransactionManager`)
 - **Variables/functions**: snake_case in new code; MOT core uses mixed styles from openGauss
 - **License headers**: Mulan PSL v2 on MOT core files; MIT on MassTree
@@ -325,7 +327,7 @@ txn->DestroyTxnKey(hi_key);
 - CI uses default settings; adjust `max_mot_global_memory` if running on constrained systems
 
 ### Dependencies
-- **Required**: cmake (3.14+), C++17 compiler, pthread, atomic
+- **Required**: cmake (3.14+), C++20 compiler (GCC 11+/Clang 14+), pthread, atomic
 - **Optional**: libnuma-dev (for NUMA support)
 - **Bundled**: MassTree in `third_party/masstree/` (openEuler-patched `kohler/masstree-beta`)
 - No external package manager (no vcpkg, conan, etc.)

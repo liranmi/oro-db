@@ -25,6 +25,11 @@
 #include "masstree_index.h"
 #include "mot_engine.h"
 #include "object_pool_compact.h"
+#include "masstree/mot_masstree_get_coro.hpp"
+
+#include <coroutine>
+#include <memory>
+#include <vector>
 
 namespace MOT {
 typedef MasstreePrimaryIndex::IndexImpl PrimaryMasstree;
@@ -99,6 +104,58 @@ Sentinel* MasstreePrimaryIndex::IndexReadImpl(const Key* key, uint32_t pid) cons
     }
 
     return sentinel;
+}
+
+void MasstreePrimaryIndex::IndexReadBatchSeq(
+    const Key* const* keys, Sentinel** out, uint32_t count, uint32_t pid) const
+{
+    for (uint32_t i = 0; i < count; ++i) {
+        void* output = nullptr;
+        bool found = false;
+        m_index.find(keys[i]->GetKeyBuf(), keys[i]->GetKeyLength(), output, found, pid);
+        out[i] = found ? static_cast<Sentinel*>(output) : nullptr;
+    }
+}
+
+void MasstreePrimaryIndex::IndexReadBatchCoro(
+    const Key* const* keys, Sentinel** out, uint32_t count, uint32_t pid) const
+{
+    (void)pid;
+    if (count == 0) {
+        return;
+    }
+
+    // Reclaim the previous batch's coroutine frames (all tasks from the prior
+    // call have been destroyed by now).
+    oro::coro::reset_frame_arena();
+
+    // Cursors and result slots must outlive the coroutines: the member
+    // coroutine captures its cursor through the implicit `this` pointer.
+    // reserve() prevents reallocation from invalidating those pointers.
+    std::vector<IndexImpl::unlocked_cursor_type> cursors;
+    cursors.reserve(count);
+    std::vector<oro::coro::Task> tasks;
+    tasks.reserve(count);
+    std::vector<std::coroutine_handle<>> handles;
+    handles.reserve(count);
+    std::unique_ptr<bool[]> found(new bool[count]());
+    std::unique_ptr<uint64_t[]> vals(new uint64_t[count]());
+
+    for (uint32_t i = 0; i < count; ++i) {
+        cursors.emplace_back(m_index,
+            reinterpret_cast<const unsigned char*>(keys[i]->GetKeyBuf()),
+            static_cast<int>(ALIGN8(keys[i]->GetKeyLength())));
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        tasks.emplace_back(cursors[i].find_unlocked_coro(*mtSessionThreadInfo, found[i], vals[i]));
+        handles.push_back(tasks[i].handle());
+    }
+
+    oro::coro::run_interleaved(handles.data(), count);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        out[i] = found[i] ? reinterpret_cast<Sentinel*>(vals[i]) : nullptr;
+    }
 }
 
 Sentinel* MasstreePrimaryIndex::IndexRemoveImpl(const Key* key, uint32_t pid)

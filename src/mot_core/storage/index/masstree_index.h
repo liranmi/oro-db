@@ -535,6 +535,20 @@ public:
      */
     static GcManager* GetCurrentGcSession();
 
+    /**
+     * @brief Batched point lookups, one sentinel per key (nullptr if absent).
+     *        Sequential baseline: probes one key at a time.
+     */
+    void IndexReadBatchSeq(const Key* const* keys, Sentinel** out, uint32_t count, uint32_t pid) const;
+
+    /**
+     * @brief Batched point lookups using coroutine-interleaved software
+     *        prefetching to overlap independent lookups' DRAM stalls. Same
+     *        result as IndexReadBatchSeq; faster when the working set spills
+     *        out of cache.
+     */
+    void IndexReadBatchCoro(const Key* const* keys, Sentinel** out, uint32_t count, uint32_t pid) const;
+
 protected:
     /**
      * @brief Implements index initialization.

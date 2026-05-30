@@ -18,6 +18,11 @@
 #include "small_vector.hh"
 #include "masstree_key.hh"
 #include "masstree_struct.hh"
+
+// oro-db: forward declaration for the coroutine-interleaved read path. The
+// definition of find_unlocked_coro lives in mot_masstree_get_coro.hpp.
+namespace oro { namespace coro { struct Task; } }
+
 namespace Masstree {
 template <typename P> struct gc_layer_rcu_callback;
 template <typename P> struct gc_layer_rcu_callback_ng;
@@ -62,6 +67,12 @@ class unlocked_tcursor {
     }
 
     bool find_unlocked(threadinfo& ti);
+
+    // oro-db: coroutine-interleaved variant of find_unlocked. Same descent and
+    // optimistic-concurrency logic, but with prefetch+suspend points so a batch
+    // of independent lookups can overlap their cache misses. Result is written
+    // to `found`/`out`. Defined in mot_masstree_get_coro.hpp.
+    ::oro::coro::Task find_unlocked_coro(threadinfo& ti, bool& found, value_type& out);
 
     inline value_type value() const {
         return lv_.value();

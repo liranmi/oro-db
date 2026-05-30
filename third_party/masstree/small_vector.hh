@@ -71,6 +71,14 @@ class small_vector {
         char lv_[sizeof(T) * N]; // XXX does not obey alignof(T)
 
         inline rep(const A& a);
+
+        // std::allocator::construct/destroy were removed in C++20; provide
+        // local equivalents so small_vector builds under C++17 and C++20.
+        template <typename... Args>
+        inline void construct(T* p, Args&&... args) {
+            ::new (static_cast<void*>(p)) T(std::forward<Args>(args)...);
+        }
+        inline void destroy(T* p) { (void)p; p->~T(); }
     };
     rep r_;
 

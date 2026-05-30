@@ -5,7 +5,9 @@ project(oro-db
     DESCRIPTION "Standalone in-memory transactional storage engine extracted from openGauss MOT"
 )
 
-set(CMAKE_CXX_STANDARD 17)
+# C++20 for coroutine support (interleaved index probing). Vendored MassTree
+# headers were made C++20-clean (small_vector.hh, string_base.hh).
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
@@ -210,6 +212,23 @@ if(ORO_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
         ${MOT_INCLUDE_DIRS}
     )
+
+    # Coroutine-interleaved index probe benchmark (seq vs coro on identical data)
+    if(ORO_HAS_MASSTREE)
+        add_executable(oro_coro_bench
+            ${CMAKE_CURRENT_SOURCE_DIR}/bench/coro_bench.cpp
+        )
+        target_link_libraries(oro_coro_bench PRIVATE oro)
+        target_include_directories(oro_coro_bench PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/stubs
+            ${MOT_INCLUDE_DIRS}
+        )
+        add_custom_command(TARGET oro_coro_bench POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_CURRENT_SOURCE_DIR}/config/mot.conf
+                $<TARGET_FILE_DIR:oro_coro_bench>/mot.conf
+        )
+    endif()
 endif()
 
 # =============================================================================
