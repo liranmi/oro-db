@@ -1,25 +1,83 @@
 # oro-db
 
-Standalone in-memory transactional storage engine extracted from
-[openGauss MOT](https://opengauss.org), with MassTree indexing.
+**A transactional in-memory storage engine you can embed in your own program.**
 
-Named after the **Oro Jackson** — the ship of the Pirate King, built from
-the Treasure Tree Adam.
+oro-db takes the engine that runs openGauss's Memory-Optimized Tables (MOT)
+and removes the database server around it. What's left is a C++ library that
+does one job: keep your data in RAM and run ACID transactions on it
+concurrently, from many cores, at memory speed. It has no SQL parser, no
+network layer, no buffer pool and no disk page format. You link it into your
+process and call it directly.
 
-## What is this?
+Named after the **Oro Jackson**, the Pirate King's ship, built from the
+Treasure Tree Adam: sturdy, fast, and built to carry whatever you put on it.
 
-oro-db extracts the MOT (Memory-Optimized Tables) core engine from openGauss
-and makes it usable as a standalone C++ library, without the full database
-server. It provides:
+## Why oro-db?
 
-- **In-memory row storage** with NUMA-aware allocation
-- **MassTree index** (trie of B+ trees) for ordered key-value access
-- **OCC transactions** with MVCC and CSN-based snapshot isolation
-- **Direct C++ API** for insert / select / update / delete
-- **TPC-C and YCSB benchmarks** for performance evaluation
-- **TPC-C consistency checks** (9 conditions from Clause 3.3, inline or post-run)
-- **MVCC snapshot testing** mode for verifying isolation under concurrency
-- **Comprehensive index test suite** (18 tests covering low-level and transactional APIs)
+Most embedded storage engines make you choose. Key-value stores are fast but
+give up transactions. Full databases have transactions but carry a query
+layer, a wire protocol and a disk-oriented design along with them. oro-db
+sits in the gap: a real multi-version transactional engine, designed for
+memory from the start, that you can drop into your own system.
+
+- **Built for memory from the ground up.** Rows live in RAM, in memory
+  allocated with NUMA placement in mind. There are no pages to pin, no buffer
+  pool to tune and no disk reads in the hot path.
+- **Transactions that scale with cores.** Optimistic concurrency control
+  means readers and writers don't block each other while they work. Conflicts
+  are checked once, at commit. MVCC with commit-sequence-number snapshots
+  gives each transaction a consistent view of the data while other
+  transactions write.
+- **Ordered, cache-friendly indexing.** Primary and secondary indexes use
+  MassTree, a trie of B+ trees built for multicore in-memory workloads. It
+  supports fast point lookups and ordered range scans.
+- **Proven code.** The core is the MOT engine from openGauss, a production
+  database, not a research prototype. oro-db replaces its kernel dependencies
+  with thin stubs and leaves the engine logic as it is.
+- **Measured, not claimed.** The repo includes full TPC-C (all 5 transactions,
+  9 tables) and YCSB (profiles A–F) implementations that drive the engine
+  directly. It also includes the TPC-C Clause 3.3 consistency checks and a
+  dedicated MVCC snapshot-isolation stress mode, so you can confirm the
+  engine is correct as well as fast.
+
+## Who is it for?
+
+- **Database builders** who need a transactional storage layer to put their
+  own query language, protocol or distribution layer on top of. For example,
+  [motlite](https://github.com/liranmi/motlite) puts a SQLite frontend on
+  oro-db.
+- **Systems and research engineers** studying OCC, MVCC and in-memory
+  indexing on a real engine that is small enough to read, change and profile.
+- **Application developers** with latency-critical, memory-resident state
+  (session stores, order books, caches with transactional guarantees) who
+  want ACID semantics without running a separate database.
+
+## What it looks like
+
+You talk to the engine in terms of tables, rows and transactions:
+
+```cpp
+txn->StartTransaction(0, ISOLATION_LEVEL::READ_COMMITED);
+
+Row* row = txn->RowLookupByKey(table, AccessType::RD_FOR_UPDATE, key, rc);
+rc = txn->UpdateRow(row, BALANCE_COL, new_balance);   // MVCC draft, invisible to others
+
+rc = txn->Commit();   // OCC validation; on conflict you get an RC to retry
+txn->EndTransaction();
+```
+
+The benchmarks in `bench/tpcc/` and `bench/ycsb/` are complete working
+examples of inserts, point lookups, updates, secondary indexes and range
+scans against this API.
+
+## Current scope
+
+oro-db is purely in-memory for now. The standalone build uses a no-op
+recovery manager, so data does not survive a restart. It is a library, not a
+server: SQL, networking and persistence are left to the system you build
+around it.
+
+---
 
 ## Building
 
